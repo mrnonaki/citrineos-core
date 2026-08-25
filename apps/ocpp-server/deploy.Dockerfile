@@ -34,4 +34,6 @@ WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
+EXPOSE 8080
+
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
