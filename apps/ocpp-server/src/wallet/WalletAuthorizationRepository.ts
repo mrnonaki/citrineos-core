@@ -47,6 +47,23 @@ export class WalletAuthorizationRepository extends SequelizeAuthorizationReposit
     return await this._stubCreate(tenantId, query);
   }
 
+  /** Upsert an Accepted row (preparing gate / remote-start pre-auth). */
+  async ensureAccepted(tenantId: number, idToken: string, idTokenType?: string): Promise<any> {
+    const where: Record<string, unknown> = { idToken };
+    if (idTokenType) where.idTokenType = idTokenType;
+    const [row] = await this._readOrCreateByQuery(tenantId, {
+      where,
+      defaults: {
+        status: AuthorizationStatusEnum.Accepted,
+        concurrentTransaction: false,
+      },
+    });
+    if (row.status !== AuthorizationStatusEnum.Accepted) {
+      await row.update({ status: AuthorizationStatusEnum.Accepted });
+    }
+    return row;
+  }
+
   private async _stubCreate(tenantId: number, query: AuthorizationQuerystring): Promise<any> {
     const where: Record<string, unknown> = { idToken: query.idToken };
     if (query.type) {
