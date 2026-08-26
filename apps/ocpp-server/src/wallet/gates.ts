@@ -94,6 +94,10 @@ export class PreparingGate {
   private readonly _logger: Logger<ILogObj>;
   private readonly _rpc: AmqpRpc;
   private readonly _listener = (rows: any[]) => this._onConnectorRows(rows);
+  // In-process in-flight guard: one StatusNotification can update the connector
+  // row more than once (two 'updated' emits back-to-back) and the Redis
+  // setIfNotExist may not be atomic under concurrency in every cache impl.
+  private readonly _inFlight = new Set<string>();
 
   constructor(deps: GateDeps) {
     this._deps = deps;
@@ -131,6 +135,8 @@ export class PreparingGate {
     const stationId = row.ocppConnectionName;
     const connectorId = row.connectorId;
     const dedupeKey = `prep:${tenantId}:${stationId}:${connectorId}`;
+    if (this._inFlight.has(dedupeKey)) return;
+    this._inFlight.add(dedupeKey);
     try {
       // Multi-replica-safe in-flight guard: only one RPC per plug event window.
       const fresh = await this._deps.cache.setIfNotExist(
@@ -160,6 +166,8 @@ export class PreparingGate {
       this._logger.info(`preparing gate started session for ${stationId}:${connectorId} (idTag ${reply.idTag})`);
     } catch (err) {
       this._logger.warn(`preparing gate error for ${stationId}:${connectorId}: ${err}`);
+    } finally {
+      this._inFlight.delete(dedupeKey);
     }
   }
 }
@@ -224,9 +232,12 @@ export class SuspendedEvGate {
       if (row?.status !== 'SuspendedEV') continue;
       const key = `${row.tenantId}:${row.ocppConnectionName}:conn${row.connectorId}`;
       this._schedule(key, async () => {
-        // 1.6 has no chargingState on the tx — find the active tx for this station.
+        // 1.6 has no chargingState on the tx — find the NEWEST active tx for this
+        // station (stale never-stopped rows must not shadow the live session).
+        // TODO: filter by connector once the tx→connector linkage is reliable.
         const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(row.tenantId, {
           where: { ocppConnectionName: row.ocppConnectionName, isActive: true },
+          order: [['createdAt', 'DESC']],
         });
         const tx = txs?.[0];
         if (!tx) return;
