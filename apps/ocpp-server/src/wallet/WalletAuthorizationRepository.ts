@@ -9,12 +9,19 @@
 // Stub-row invariants (violating any of these silently bypasses or breaks the gate):
 //   1. status must be the literal 'Accepted' — a NULL status short-circuits to
 //      Accepted in the 1.6 paths WITHOUT running authorizers.
-//   2. Exactly one row per (tenantId, idToken, idTokenType) — >1 rows throws
-//      uncaught in the 2.x Authorize handlers (CallError InternalError).
+//   2. Exactly one row per (tenantId, idToken) — regardless of idTokenType. 1.6
+//      Authorize has NO type so it queries by idToken alone; if 1.6 (type NULL) and
+//      2.x (type MacAddress) each stub their own row for the same value, the 1.6
+//      query matches BOTH → authorizations.length !== 1 → Invalid before the wallet
+//      gate runs (the charger is denied). A mixed-version fleet (a card/MAC used at
+//      a 1.6 charger AND a 2.x charger) hits this on the SECOND cross-version use.
+//      So: dedup on idToken VALUE only, and always store a value-DERIVED type
+//      (detectTokenType) so the 2.x type-filtered query still resolves the one row.
 //   3. Must be a real persisted row (createTransactionByStartTransaction reuses its id).
 
 import { SequelizeAuthorizationRepository } from '@citrineos/core';
 import { AuthorizationStatusEnum } from '@citrineos/types';
+import { detectTokenType } from './WalletRpcClient.js';
 
 type AuthorizationQuerystring = {
   idToken?: string | null;
@@ -49,11 +56,11 @@ export class WalletAuthorizationRepository extends SequelizeAuthorizationReposit
 
   /** Upsert an Accepted row (preparing gate / remote-start pre-auth). */
   async ensureAccepted(tenantId: number, idToken: string, idTokenType?: string): Promise<any> {
-    const where: Record<string, unknown> = { idToken };
-    if (idTokenType) where.idTokenType = idTokenType;
+    // Dedup on idToken VALUE only (invariant #2); store a value-derived type.
     const [row] = await this._readOrCreateByQuery(tenantId, {
-      where,
+      where: { idToken },
       defaults: {
+        idTokenType: detectTokenType(idToken, idTokenType),
         status: AuthorizationStatusEnum.Accepted,
         concurrentTransaction: false,
       },
@@ -65,19 +72,20 @@ export class WalletAuthorizationRepository extends SequelizeAuthorizationReposit
   }
 
   private async _stubCreate(tenantId: number, query: AuthorizationQuerystring): Promise<any> {
-    const where: Record<string, unknown> = { idToken: query.idToken };
-    if (query.type) {
-      where.idTokenType = query.type;
-    }
+    // Dedup on idToken VALUE only — NEVER include query.type in the WHERE, or a 1.6
+    // (type-less) and a 2.x (typed) lookup create two rows for the same value and
+    // break the 1.6 length!==1 check. Store a value-derived type so the 2.x
+    // type-filtered handler query still resolves this single row.
     const [row] = await this._readOrCreateByQuery(tenantId, {
-      where,
+      where: { idToken: query.idToken },
       defaults: {
+        idTokenType: detectTokenType(query.idToken as string, query.type),
         status: AuthorizationStatusEnum.Accepted,
         concurrentTransaction: false,
       },
     });
     this.logger.info(
-      `wallet: stub-created Authorization id=${row.id} for unknown idToken (tenant ${tenantId})`,
+      `wallet: stub-created Authorization id=${row.id} type=${row.idTokenType} for unknown idToken (tenant ${tenantId})`,
     );
     return row;
   }
