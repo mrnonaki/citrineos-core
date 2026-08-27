@@ -316,19 +316,23 @@ export class SuspendedEvGate {
     for (const row of rows ?? []) {
       if (!row) continue;
       // Key must NOT include fields that may be absent on PARTIAL event rows
-      // (arm on a full row + cancel on a partial one would miss the timer).
-      const key = `${row.tenantId}:tx:${row.transactionId}`;
+      // (arm on a full row + cancel on a partial one would miss the timer), and
+      // must be PK-based: OCPP transactionId repeats across stations (unique is
+      // (stationId, transactionId) in v2).
+      const key = `${row.tenantId}:tx:${row.id}`;
       if (row.isActive && row.chargingState === 'SuspendedEV') {
         this._schedule(key, async () => {
           // Post-debounce re-read: the resume/end event may have been processed
           // by ANOTHER replica (its cancel can't reach our timer), so trust the
-          // DB, not the event that armed us. Query by transactionId ONLY — CRUD
-          // 'updated' rows can be PARTIAL (e.g. ocppConnectionName undefined when
-          // the write touched other columns), so every downstream value comes
+          // DB, not the event that armed us. Re-read by PK — CRUD 'updated' rows
+          // can be PARTIAL (only touched columns), but the PK is always present,
+          // and v2's Transactions unique is (stationId, transactionId), so the
+          // OCPP transactionId ALONE can match another station's tx (observed on
+          // kind: 1.6 tx id 7 on two stations). Every downstream value comes
           // from the re-read row, not the event row.
           const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(
             row.tenantId,
-            { where: { transactionId: row.transactionId } },
+            { where: { id: row.id } },
           );
           const cur = txs?.[0];
           if (!cur?.isActive || cur.chargingState !== 'SuspendedEV') return;
