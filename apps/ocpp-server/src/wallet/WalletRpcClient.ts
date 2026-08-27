@@ -18,6 +18,10 @@ import type { ILogObj, Logger } from 'tslog';
 export const RPC_TIMEOUT_MS = Number(process.env.RABBITMQ_TIMEOUT_MS ?? 10000);
 
 // Same detection as the 1.9.1 fork: MAC forms → MacAddress, else ISO14443.
+// KNOWN AMBIGUITY (kept for 1.9.1 parity): a bare-12-hex RFID UID (7-byte UIDs
+// truncated / 6-byte UIDs) also matches and gets typed MacAddress. Fleet-safe
+// today because ChargeMai member idTags are 'W'-prefixed (never pure hex); only
+// autocharge MACs arrive as bare hex. Revisit if a pure-hex card range appears.
 const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{12}$/;
 
 export function detectTokenType(idToken: string, provided?: string | null): string {
@@ -40,6 +44,9 @@ export class AmqpRpc {
   private readonly _queue: string;
   private readonly _timeoutMs: number;
   private _setup: { channel: any; replyQueue: string } | null = null;
+  // Serializes topology setup: concurrent first calls previously each asserted
+  // their own exclusive reply queue (one leaked per race).
+  private _setupInFlight: Promise<{ channel: any; replyQueue: string }> | null = null;
   private readonly _pending = new Map<
     string,
     { resolve: (d: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
@@ -89,6 +96,18 @@ export class AmqpRpc {
     if (this._setup && this._setup.channel === channel) {
       return this._setup;
     }
+    if (this._setupInFlight) {
+      const setup = await this._setupInFlight;
+      // Re-check: the in-flight setup may have been against an older channel.
+      if (setup.channel === channel) return setup;
+    }
+    this._setupInFlight = this._doSetup(channel).finally(() => {
+      this._setupInFlight = null;
+    });
+    return this._setupInFlight;
+  }
+
+  private async _doSetup(channel: any): Promise<{ channel: any; replyQueue: string }> {
     // New or recreated channel: fail pending requests fast, re-assert topology.
     for (const [id, p] of this._pending) {
       p.reject(new Error(`wallet RPC channel ${this._channelId} recreated`));
