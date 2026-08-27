@@ -1,0 +1,76 @@
+# Run-once database migration Job — fixes the #219 multi-replica "enum race".
+#
+# Problem: the stock image runs `pnpm run db:migrate` (sequelize-cli) at every
+# container boot via entrypoint.sh. With >1 replica, every pod runs migrations
+# concurrently at startup and they collide on DDL such as
+# `CREATE TYPE ... AS ENUM`. The app also has a second auto-DDL path,
+# sequelize `sync()`, guarded by BOOTSTRAP_CITRINEOS_DATABASE_SYNC.
+#
+# Fix: run migrations exactly ONCE here, before any app pod. The app
+# Deployments (30-router / 31-modules) then:
+#   - drop `db:migrate` from their command (start the node process directly),
+#   - set BOOTSTRAP_CITRINEOS_DATABASE_SYNC=false (kill the sync() path),
+#   - gate startup on this Job via a `wait-migrate` initContainer.
+#
+# Idempotency: sequelize records applied migrations in the SequelizeMeta table,
+# so re-running this Job is a no-op once the schema is current. On an UPGRADE
+# that ships new migrations, delete+recreate this Job to apply them BEFORE
+# rolling the app:  kubectl -n citrineos delete job citrineos-migrate && kubectl apply -f 20-migrate-job.yaml
+#
+# NOTE: intentionally NO ttlSecondsAfterFinished — the completed Job object must
+# persist so the app pods' `wait-migrate` initContainer can read its status.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: citrineos-migrate
+  namespace: citrineos
+  labels:
+    app: citrineos-migrate
+spec:
+  backoffLimit: 6            # retry (new pod each time) while DB is still coming up
+  activeDeadlineSeconds: 600 # give up after 10 min rather than hang a rollout
+  template:
+    metadata:
+      labels:
+        app: citrineos-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # Use the wallet image (superset of upstream; identical compiled
+          # dist/migrations). Either citrine image works — pick the one you deploy.
+          image: localhost/citrineos-v2:beta4-wallet
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - cd /usr/local/apps/citrineos/apps/ocpp-server && exec pnpm run db:migrate
+          env:
+            # DB connection resolves exactly like the app: HOST from env, the rest
+            # (name/user/password/port/dialect) from the image's config.json via
+            # dist/config/sequelize.bridge.config.js.
+            - name: APP_NAME
+              value: all
+            - name: APP_ENV
+              value: docker
+            - name: BOOTSTRAP_CITRINEOS_DATABASE_HOST
+              value: ocpp-db
+            - name: BOOTSTRAP_CITRINEOS_CONFIG_FILENAME
+              value: config.json
+            - name: BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE
+              value: local
+            - name: BOOTSTRAP_CITRINEOS_FILE_ACCESS_LOCAL_DEFAULT_FILE_PATH
+              value: /data
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - emptyDir: {}
+          name: data

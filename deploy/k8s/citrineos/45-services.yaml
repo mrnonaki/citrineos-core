@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocpp-db
+spec:
+  ports:
+  - port: 5432
+    protocol: TCP
+    targetPort: 5432
+  selector:
+    app: ocpp-db
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  ports:
+  - port: 6379
+    protocol: TCP
+    targetPort: 6379
+  selector:
+    app: redis
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: amqp-broker
+spec:
+  ports:
+  - name: amqp
+    port: 5672
+    protocol: TCP
+    targetPort: 5672
+  - name: mgmt
+    port: 15672
+    protocol: TCP
+    targetPort: 15672
+  selector:
+    app: amqp-broker
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hasura
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: hasura
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citrine-router
+spec:
+  ports:
+  - name: admin
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  - name: ws-sp0
+    port: 8081
+    protocol: TCP
+    targetPort: 8081
+  - name: ws-sp1
+    port: 8082
+    protocol: TCP
+    targetPort: 8082
+  selector:
+    app: citrine-router
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citrine-modules
+spec:
+  ports:
+  - name: rest
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: citrine-modules
+  type: ClusterIP
+
+---

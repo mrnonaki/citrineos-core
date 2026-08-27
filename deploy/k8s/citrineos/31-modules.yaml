@@ -1,0 +1,103 @@
+# citrine-modules — OCPP handler modules, running OUR wallet fork
+# (dist/wallet/main.js). Patched from the boot-migrating baseline the same way as
+# the router: command drops db:migrate, SYNC=false, wait-migrate initContainer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citrine-modules
+  namespace: citrineos
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: citrine-modules
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app: citrine-modules
+    spec:
+      serviceAccountName: citrineos-migrate-waiter
+      initContainers:
+        - name: wait-migrate
+          image: docker.io/alpine/k8s:1.31.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "waiting for job/citrineos-migrate to exist..."
+              until kubectl get job citrineos-migrate -n citrineos >/dev/null 2>&1; do sleep 3; done
+              echo "waiting for job/citrineos-migrate to complete..."
+              kubectl wait --for=condition=complete --timeout=300s job/citrineos-migrate -n citrineos
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+      containers:
+        - name: modules
+          image: localhost/citrineos-v2:beta4-wallet
+          imagePullPolicy: Never
+          # Bypass the inline `db:migrate &&` — start the wallet entrypoint directly.
+          command:
+            - /bin/sh
+            - -c
+            - cd /usr/local/apps/citrineos/apps/ocpp-server && exec node dist/wallet/main.js
+          env:
+            - name: APP_NAME
+              value: modules
+            - name: APP_ENV
+              value: docker
+            - name: BOOTSTRAP_CITRINEOS_DATABASE_HOST
+              value: ocpp-db
+            - name: BOOTSTRAP_CITRINEOS_DATABASE_SYNC
+              value: "false"
+            - name: BOOTSTRAP_CITRINEOS_CONFIG_FILENAME
+              value: config.json
+            - name: BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE
+              value: local
+            - name: BOOTSTRAP_CITRINEOS_FILE_ACCESS_LOCAL_DEFAULT_FILE_PATH
+              value: /data
+            # Wallet fork — RabbitMQ RPC/CRUD consumer switches (all 5 flows).
+            - name: RABBITMQ_AUTH
+              value: "true"
+            - name: RABBITMQ_PREPARING
+              value: "true"
+            - name: RABBITMQ_SUSPENDED
+              value: "true"
+            - name: RABBITMQ_REMOTESTART
+              value: "true"
+            - name: RABBITMQ_REMOTESTOP
+              value: "true"
+            - name: RABBITMQ_SUSPENDED_MIN_DURATION_MS
+              value: "3000"
+            - name: CITRINEOS_util_cache_redis_url
+              value: redis://redis:6379
+          ports:
+            - containerPort: 8080
+          startupProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 150m, memory: 384Mi }
+            limits:   { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - mountPath: /data
+              name: data
+      volumes:
+        - emptyDir: {}
+          name: data
