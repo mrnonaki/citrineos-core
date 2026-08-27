@@ -76,7 +76,14 @@ abstract class WalletConsumer {
   }
 
   async stop(): Promise<void> {
-    await this._deps.channelManager.closeChannel?.(this._channelId);
+    if (typeof this._deps.channelManager.closeChannel !== 'function') {
+      // Upstream ChannelManager without closeChannel: the consumer keeps its
+      // channel until process exit. Loud, so a "stopped" consumer that still
+      // consumes is explainable from logs.
+      this._logger.warn(`stop(): channelManager has no closeChannel — ${this._queue} consumer not detached`);
+      return;
+    }
+    await this._deps.channelManager.closeChannel(this._channelId);
   }
 
   protected async stationProtocol(stationId: string): Promise<string> {

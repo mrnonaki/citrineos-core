@@ -80,3 +80,8 @@ relies on initContainer retry to handle the "Job not created yet" case.
 > were live on kind. For anything beyond local dev, move POSTGRES_PASSWORD /
 > HASURA_GRAPHQL_ADMIN_SECRET / DB URL into a Secret and reference them via
 > `secretKeyRef` instead of inline `value:`.
+>
+> ⚠ **`ocpp-db` stores its data on an `emptyDir`** — a pod restart/reschedule
+> WIPES the database. That is fine for the kind lab this set was captured from,
+> and catastrophic anywhere else. Before any dev/staging/prod use, switch `pgdata`
+> to a PersistentVolumeClaim (and consider a StatefulSet for the DB).
