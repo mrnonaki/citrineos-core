@@ -25,6 +25,7 @@ Migrations run **exactly once**, in a `Job`, before any app pod:
 | `00-namespace.yaml` | `citrineos` namespace |
 | `10-rbac-migrate.yaml` | SA + Role (get/list/watch **jobs** only) for the wait initContainer |
 | `20-migrate-job.yaml` | run-once `sequelize-cli db:migrate` Job |
+| `25-retention-cron.yaml` | nightly purge of unbounded per-message tables (upstream never deletes; OCPPMessages logs EVERY message and was ~80% of a real DB). Windows env-tunable: OCPPMessages 30d, MeterValues 90d, StatusNotifications 30d; Transactions/TransactionEvents never touched |
 | `30-router.yaml` | `citrine-router`, patched: no boot-migrate, `SYNC=false`, waits for the Job |
 | `31-modules.yaml` | `citrine-modules` (wallet fork), same patch |
 | `40-infra.yaml` | postgres / redis / rabbitmq / hasura Deployments |
