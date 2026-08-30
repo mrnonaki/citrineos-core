@@ -17,7 +17,7 @@ build-image:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
       --dockerfile "${CI_PROJECT_DIR}/apps/ocpp-server/deploy.Dockerfile"
-      --destination "${CI_REGISTRY_IMAGE}:043cd763"
+      --destination "${CI_REGISTRY_IMAGE}:043cd763-routermode"
       --destination "${CI_REGISTRY_IMAGE}:v2-wallet"
       ${KANIKO_ARGS}
   rules:

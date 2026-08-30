@@ -239,7 +239,16 @@ function registerMessaging(container: AwilixContainer): void {
     ).singleton(),
     routerHandler: asFunction(
       ({ config, channelManager, logger }) =>
-        new RabbitMqReceiver({ config, channelManager, logger }),
+        // routerMode scoped to the ROUTER's singleton receiver ONLY (never the per-module
+        // `handler` above; routerHandler is resolved only by the All/Router roles and injected
+        // into no module — so module receivers stay in module mode). Fixes dropped CALLRESULTs
+        // at >1 router replica: in module mode the router's per-charger subscription creates a
+        // queue keyed by station only (rabbit_queue_<tenant>:<station>), so every replica that
+        // has ever served that station consumes the SAME queue and RabbitMQ round-robins each
+        // response — only the socket-owning pod can deliver, the rest drop. In routerMode each
+        // replica instead binds ocppConnectionName to its own rabbit_queue_router_<instanceId>,
+        // so the headers exchange delivers each response only to the owning pod.
+        new RabbitMqReceiver({ config, channelManager, logger, routerMode: true }),
     ).singleton(),
   });
 }
