@@ -1,0 +1,26 @@
+# Throwaway build branch: build CitrineOS v2 (v2-wallet @043cd763) ocpp-server image
+# via kaniko and push to this project's GitLab Container Registry.
+stages: [build]
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    KANIKO_ARGS: "--compressed-caching=false --single-snapshot"
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/apps/ocpp-server/deploy.Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}:043cd763"
+      --destination "${CI_REGISTRY_IMAGE}:v2-wallet"
+      ${KANIKO_ARGS}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "v2-build-043cd763"'
+    - if: '$CI_COMMIT_TAG'
+  timeout: 40m
