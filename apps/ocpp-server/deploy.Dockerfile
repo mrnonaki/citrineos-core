@@ -24,7 +24,9 @@ RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
 # Using a slim image to reduce the final image size
 FROM node:24.16.0-slim
 
-RUN corepack enable
+# no corepack in the final image: the entrypoint calls
+# ./node_modules/.bin/sequelize-cli directly, so nothing needs pnpm (or a
+# network fetch of it) at runtime.
 
 COPY --from=build /deploy /usr/local/apps/citrineos
 # pnpm deploy honours the package's `files` list (["dist"]), so runtime files
