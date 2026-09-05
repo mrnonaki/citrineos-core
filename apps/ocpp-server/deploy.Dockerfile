@@ -28,18 +28,19 @@ FROM node:24.16.0-slim
 # ./node_modules/.bin/sequelize-cli directly, so nothing needs pnpm (or a
 # network fetch of it) at runtime.
 
-COPY --from=build /deploy /usr/local/apps/citrineos
+COPY --from=build /deploy /usr/local/apps/citrineos/apps/ocpp-server
 # pnpm deploy honours the package's `files` list (["dist"]), so runtime files
 # living outside dist/ must be copied explicitly.
-COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/entrypoint.sh
-COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/.sequelizerc
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc
 
-WORKDIR /usr/local/apps/citrineos
+WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
 
-RUN chmod +x /usr/local/apps/citrineos/entrypoint.sh
+RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
 EXPOSE 8080
 
-# entrypoint.sh self-locates via SCRIPT_DIR, so the flattened layout
-# (package root = image root dir, no apps/ prefix) works unchanged.
-ENTRYPOINT ["/usr/local/apps/citrineos/entrypoint.sh"]
+# Deployed at the SAME path as the fat image (apps/ocpp-server) so every
+# existing k8s manifest command (cd .../apps/ocpp-server && node dist/...)
+# keeps working — the slim image is a drop-in tag swap.
+ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
