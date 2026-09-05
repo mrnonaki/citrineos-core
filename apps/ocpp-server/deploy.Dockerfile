@@ -13,18 +13,27 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/ocpp-server..." build
 
+# Prune to a production-only bundle of ocpp-server + its workspace deps.
+# The old COPY-everything approach shipped the whole monorepo with every
+# package's devDependencies (1.77Gi); `pnpm deploy` keeps only what the
+# ocpp-server actually needs at runtime. --legacy: pnpm 10 requires either
+# injected workspace packages or this flag for deploy.
+RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
+
 # The final stage, which copies built files and prepares the run environment
 # Using a slim image to reduce the final image size
 FROM node:24.16.0-slim
 
 RUN corepack enable
 
-COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
+COPY --from=build /deploy /usr/local/apps/citrineos
 
 WORKDIR /usr/local/apps/citrineos
 
-RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+RUN chmod +x /usr/local/apps/citrineos/entrypoint.sh
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
+# entrypoint.sh self-locates via SCRIPT_DIR, so the flattened layout
+# (package root = image root dir, no apps/ prefix) works unchanged.
+ENTRYPOINT ["/usr/local/apps/citrineos/entrypoint.sh"]
