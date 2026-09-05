@@ -1,5 +1,7 @@
-# Build the CitrineOS v2 ocpp-server image (slim: pnpm deploy --prod, see
-# apps/ocpp-server/deploy.Dockerfile) on every push to v2-wallet.
+# Build the CitrineOS v2 server images (slim: pnpm deploy --prod, see
+# apps/<app>/deploy.Dockerfile) on every push to v2-wallet:
+#   build-image       -> ocpp-server -> <registry>:<tag>            / OCIR citrineos-core
+#   build-image-ocpi  -> ocpi-server -> <registry>/ocpi:<tag>       / OCIR citrineos-ocpi
 #
 # Pushes :<short-sha> + :v2-wallet to the GitLab registry, and mirrors both to
 # OCIR (in-region for the OKE cluster, ~3s pulls) when the CI variables
@@ -11,10 +13,7 @@
 # minutes for this namespace are exhausted.
 stages: [build]
 
-variables:
-  OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-core
-
-build-image:
+.kaniko-build:
   stage: build
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
@@ -35,11 +34,25 @@ build-image:
     - if [ -n "$OCIR_TOKEN" ]; then EXTRA="--destination $OCIR_IMAGE:$CI_COMMIT_SHORT_SHA --destination $OCIR_IMAGE:v2-wallet"; fi
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
-      --dockerfile "${CI_PROJECT_DIR}/apps/ocpp-server/deploy.Dockerfile"
-      --destination "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
-      --destination "${CI_REGISTRY_IMAGE}:v2-wallet"
+      --dockerfile "${CI_PROJECT_DIR}/apps/${APP_DIR}/deploy.Dockerfile"
+      --destination "${GITLAB_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+      --destination "${GITLAB_IMAGE}:v2-wallet"
       $EXTRA
       ${KANIKO_ARGS}
   rules:
     - if: '$CI_COMMIT_BRANCH == "v2-wallet"'
   timeout: 40m
+
+build-image:
+  extends: .kaniko-build
+  variables:
+    APP_DIR: ocpp-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-core
+
+build-image-ocpi:
+  extends: .kaniko-build
+  variables:
+    APP_DIR: ocpi-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE/ocpi
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-ocpi
