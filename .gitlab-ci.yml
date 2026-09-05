@@ -1,0 +1,25 @@
+# Throwaway build branch: SLIM build of CitrineOS v2 ocpp-server (@043cd763 +
+# pnpm-deploy prune) — pushes :043cd763-slim for size/behaviour comparison
+# against the fat :043cd763 image before adopting the Dockerfile change.
+stages: [build]
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    KANIKO_ARGS: "--compressed-caching=false --single-snapshot"
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/apps/ocpp-server/deploy.Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}:043cd763-slim"
+      ${KANIKO_ARGS}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "v2-build-slim"'
+  timeout: 40m
