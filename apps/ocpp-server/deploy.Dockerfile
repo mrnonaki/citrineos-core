@@ -27,6 +27,10 @@ FROM node:24.16.0-slim
 RUN corepack enable
 
 COPY --from=build /deploy /usr/local/apps/citrineos
+# pnpm deploy honours the package's `files` list (["dist"]), so runtime files
+# living outside dist/ must be copied explicitly.
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/entrypoint.sh
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/.sequelizerc
 
 WORKDIR /usr/local/apps/citrineos
 
