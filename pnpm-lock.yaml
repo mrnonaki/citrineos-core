@@ -210,6 +210,9 @@ importers:
       sequelize:
         specifier: ^6.37.7
         version: 6.37.8(pg-hstore@2.3.4)(pg@8.11.3)(sqlite3@5.1.7)
+      sequelize-cli:
+        specifier: ^6.6.2
+        version: 6.6.5
       sqlite3:
         specifier: 5.1.7
         version: 5.1.7
