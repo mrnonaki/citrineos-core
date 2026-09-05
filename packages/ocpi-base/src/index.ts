@@ -21,6 +21,7 @@ import { OcpiConfigToken } from './config/ocpi.types.js';
 import type { IDtoModule } from './events/index.js';
 import { OcpiGraphqlClient } from './graphql/index.js';
 import { HealthController } from './util/KoaServerHealthController.js';
+import { mountOcpiX } from './controllers/LiveController.js';
 import { Ajv } from 'ajv';
 import addFormats from 'ajv-formats';
 
@@ -354,6 +355,7 @@ export class OcpiServer extends KoaServer {
         defaultErrorHandler: false,
       } as RoutingControllersOptions;
       this.initApp(options);
+      mountOcpiX(this.koa); // chargemai /ocpi-x extension namespace (fork)
 
       this.initKoaSwagger(
         {
