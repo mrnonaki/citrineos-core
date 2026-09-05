@@ -1,0 +1,45 @@
+# Build the CitrineOS v2 ocpp-server image (slim: pnpm deploy --prod, see
+# apps/ocpp-server/deploy.Dockerfile) on every push to v2-wallet.
+#
+# Pushes :<short-sha> + :v2-wallet to the GitLab registry, and mirrors both to
+# OCIR (in-region for the OKE cluster, ~3s pulls) when the CI variables
+# OCIR_USER / OCIR_TOKEN are set — absent variables just skip the mirror, the
+# pipeline stays green. OCIR_USER must include the identity-domain segment:
+#   axl5oln5mfej/default/<user>   (plain namespace/user gets 401)
+#
+# Runs on the self-hosted OKE runner (#55922570) — the gitlab.com shared-runner
+# minutes for this namespace are exhausted.
+stages: [build]
+
+variables:
+  OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-core
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    # keep kaniko within the runner's 3Gi job memory limit
+    KANIKO_ARGS: "--compressed-caching=false --single-snapshot"
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      if [ -n "$OCIR_TOKEN" ]; then
+        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"},\"ap-singapore-1.ocir.io\":{\"username\":\"${OCIR_USER}\",\"password\":\"${OCIR_TOKEN}\"}}}" > /kaniko/.docker/config.json
+      else
+        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"}}}" > /kaniko/.docker/config.json
+      fi
+  script:
+    - EXTRA=""
+    - if [ -n "$OCIR_TOKEN" ]; then EXTRA="--destination $OCIR_IMAGE:$CI_COMMIT_SHORT_SHA --destination $OCIR_IMAGE:v2-wallet"; fi
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/apps/ocpp-server/deploy.Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+      --destination "${CI_REGISTRY_IMAGE}:v2-wallet"
+      $EXTRA
+      ${KANIKO_ARGS}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "v2-wallet"'
+  timeout: 40m

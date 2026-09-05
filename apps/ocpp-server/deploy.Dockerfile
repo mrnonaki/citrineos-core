@@ -13,18 +13,34 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/ocpp-server..." build
 
+# Prune to a production-only bundle of ocpp-server + its workspace deps.
+# The old COPY-everything approach shipped the whole monorepo with every
+# package's devDependencies (1.77Gi); `pnpm deploy` keeps only what the
+# ocpp-server actually needs at runtime. --legacy: pnpm 10 requires either
+# injected workspace packages or this flag for deploy.
+RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
+
 # The final stage, which copies built files and prepares the run environment
 # Using a slim image to reduce the final image size
 FROM node:24.16.0-slim
 
-RUN corepack enable
+# no corepack in the final image: the entrypoint calls
+# ./node_modules/.bin/sequelize-cli directly, so nothing needs pnpm (or a
+# network fetch of it) at runtime.
 
-COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
+COPY --from=build /deploy /usr/local/apps/citrineos/apps/ocpp-server
+# pnpm deploy honours the package's `files` list (["dist"]), so runtime files
+# living outside dist/ must be copied explicitly.
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc
 
-WORKDIR /usr/local/apps/citrineos
+WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
 EXPOSE 8080
 
+# Deployed at the SAME path as the fat image (apps/ocpp-server) so every
+# existing k8s manifest command (cd .../apps/ocpp-server && node dist/...)
+# keeps working — the slim image is a drop-in tag swap.
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
