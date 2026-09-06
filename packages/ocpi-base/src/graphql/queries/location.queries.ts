@@ -71,6 +71,9 @@ export const GET_LOCATIONS_QUERY = gql`
             powerType
             termsAndConditionsUrl
             type
+            tariff: Tariff {
+              id
+            }
             status
             errorCode
             timestamp
@@ -158,6 +161,9 @@ export const GET_LOCATION_BY_ID_QUERY = gql`
             powerType
             termsAndConditionsUrl
             type
+            tariff: Tariff {
+              id
+            }
             status
             errorCode
             timestamp
@@ -235,6 +241,9 @@ export const GET_CONNECTOR_BY_ID_QUERY = gql`
             powerType
             termsAndConditionsUrl
             type
+            tariff: Tariff {
+              id
+            }
             status
             errorCode
             timestamp
