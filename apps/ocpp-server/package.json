@@ -42,8 +42,10 @@
     "@citrineos/ocpp": "workspace:*",
     "@citrineos/dal": "workspace:*",
     "@citrineos/types": "workspace:*",
+    "awilix": "catalog:",
     "cross-env": "catalog:",
     "sqlite3": "catalog:",
+    "tslog": "catalog:",
     "ws": "catalog:"
   },
   "optionalDependencies": {
