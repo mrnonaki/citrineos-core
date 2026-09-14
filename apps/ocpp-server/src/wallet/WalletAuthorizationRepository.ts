@@ -19,7 +19,7 @@
 //      (detectTokenType) so the 2.x type-filtered query still resolves the one row.
 //   3. Must be a real persisted row (createTransactionByStartTransaction reuses its id).
 
-import { SequelizeAuthorizationRepository } from '@citrineos/core';
+import { SequelizeAuthorizationRepository } from '@citrineos/dal';
 import { AuthorizationStatusEnum } from '@citrineos/types';
 import { detectTokenType } from './WalletRpcClient.js';
 

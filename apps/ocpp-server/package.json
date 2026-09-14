@@ -43,11 +43,13 @@
     "@citrineos/ocpp": "workspace:*",
     "@citrineos/dal": "workspace:*",
     "@citrineos/types": "workspace:*",
+    "awilix": "catalog:",
     "cross-env": "catalog:",
     "sequelize": "catalog:",
     "sequelize-cli": "catalog:",
     "sequelize-typescript": "catalog:",
     "sqlite3": "catalog:",
+    "tslog": "catalog:",
     "ws": "catalog:"
   },
   "optionalDependencies": {

@@ -24,7 +24,7 @@
 //   suspended: req {tenantId, stationId, evseId, transactionId, connectorId?}
 //              rep {action:'Stop'|'Continue'}
 
-import { Connector, Evse } from '@citrineos/core';
+import { Connector, Evse } from '@citrineos/dal';
 import type { ILogObj, Logger } from 'tslog';
 import { AmqpRpc, RPC_TIMEOUT_MS } from './WalletRpcClient.js';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
