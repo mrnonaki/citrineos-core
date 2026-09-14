@@ -29,6 +29,7 @@ import { SessionsService } from './services/sessions-service.js';
 import { TariffsService } from './services/tariffs-service.js';
 import { TokensService } from './services/tokens-service.js';
 import { VersionService } from './services/version-service.js';
+import { LiveService } from './services/live-service.js';
 import { CommandExecutor } from './util/command-executor.js';
 
 import { CdrsClientApi } from './trigger/cdrs-client-api.js';
@@ -83,6 +84,7 @@ import { TokensModuleApi } from './modules/tokens/module/tokens-module-api.js';
 import { VersionsModule } from './modules/versions/index.js';
 import { VersionsModuleApi } from './modules/versions/module/versions-module-api.js';
 import { HealthController } from './util/koa-server-health-controller.js';
+import { LiveController } from './controllers/live-controller.js';
 
 export type OcpiPrebuilt = {
   logger: Logger<ILogObj>;
@@ -129,6 +131,7 @@ export function buildOcpiContainer(config: OcpiConfig, prebuilt: OcpiPrebuilt): 
   registerEvents(container);
   registerModules(container);
   registerModuleApis(container);
+  registerLiveExtension(container);
 
   useContainer(createIocAdapter(container));
 
@@ -285,6 +288,16 @@ function registerModules(container: AwilixContainer): void {
   for (const [token, Module] of Object.entries<Constructor<object>>(OCPI_MODULES)) {
     container.register({ [token]: singletonClass(token, Module) });
   }
+}
+
+// chargemai /ocpi-x/v1/live extension (fork): registered here so the
+// routing-controllers IoC adapter can resolve LiveController + LiveService
+// when mountOcpiX wires the /ocpi-x namespace (see OcpiServer.initKoaServer).
+function registerLiveExtension(container: AwilixContainer): void {
+  container.register({
+    liveService: singletonClass('liveService', LiveService),
+    liveController: singletonClass('liveController', LiveController),
+  });
 }
 
 function registerModuleApis(container: AwilixContainer): void {
