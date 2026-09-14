@@ -435,12 +435,18 @@ importers:
       '@citrineos/types':
         specifier: workspace:*
         version: link:../../packages/types
+      awilix:
+        specifier: 'catalog:'
+        version: 13.0.5
       cross-env:
         specifier: 'catalog:'
         version: 7.0.3
       sqlite3:
         specifier: 'catalog:'
         version: 5.1.7
+      tslog:
+        specifier: 'catalog:'
+        version: 5.1.0
       ws:
         specifier: 'catalog:'
         version: 8.21.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)
