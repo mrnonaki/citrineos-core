@@ -5,6 +5,7 @@
 export * from './charging-station-queries.js';
 export * from './charging-station-sequence-queries.js';
 // export * from './cpo-tenant-queries.js';
+export * from './live-queries.js';
 export * from './location-queries.js';
 export * from './tariff-queries.js';
 export * from './tenant-mutations.js';
