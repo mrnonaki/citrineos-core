@@ -12,6 +12,7 @@ import { KoaServer } from './koa-server.js';
 import type { OcpiConfig } from '../config/ocpi-types.js';
 import type { IDtoModule } from '../handlers/index.js';
 import { HealthController } from './koa-server-health-controller.js';
+import { mountOcpiX } from '../apis/controllers/live-controller.js';
 
 export class OcpiServer extends KoaServer {
   private readonly ocpiConfig: OcpiConfig;
@@ -56,6 +57,7 @@ export class OcpiServer extends KoaServer {
         defaultErrorHandler: false,
       } as RoutingControllersOptions;
       this.initApp(options);
+      mountOcpiX(this.koa); // chargemai /ocpi-x extension namespace (fork)
 
       this.initKoaSwagger(
         {
