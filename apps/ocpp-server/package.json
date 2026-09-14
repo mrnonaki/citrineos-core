@@ -45,6 +45,9 @@
     "@citrineos/types": "workspace:*",
     "awilix": "catalog:",
     "cross-env": "catalog:",
+    "sequelize": "catalog:",
+    "sequelize-cli": "^6.6.2",
+    "sequelize-typescript": "catalog:",
     "sqlite3": "catalog:",
     "tslog": "catalog:",
     "ws": "catalog:"
