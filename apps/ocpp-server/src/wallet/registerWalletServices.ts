@@ -4,6 +4,7 @@
 // which is equivalent to registering at the end of buildContainer (awilix register
 // is last-write-wins). Root container required (strict mode + singletons).
 
+import { RabbitMqReceiver } from '@citrineos/ocpp';
 import { asClass, asFunction, type AwilixContainer } from 'awilix';
 import { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
 import { WalletRpcAuthorizer } from './WalletRpcAuthorizer.js';
@@ -23,6 +24,28 @@ export function registerWalletServices(container: AwilixContainer): void {
     // upstream behavior (pre-synced rows only, no RPC).
     authorizers: asFunction(({ walletRpcAuthorizer }: { walletRpcAuthorizer: WalletRpcAuthorizer }) =>
       walletRpcEnabled() ? [walletRpcAuthorizer] : [],
+    ).singleton(),
+  });
+}
+
+// Multi-replica router mode. Upstream ships a two-mode RabbitMqReceiver (queue-per-
+// router-instance vs queue-per-charger) but registers `routerHandler` WITHOUT
+// routerMode, so it defaults OFF — which drops CALLRESULTs at >1 router replica:
+// the per-station queue is shared across every replica that ever served the station,
+// and RabbitMQ round-robins each response, so only the socket-owning pod can deliver.
+// Re-register routerHandler with routerMode enabled when INSTANCE_IDENTIFIER (per-pod,
+// unique) is set, so each replica binds its own rabbit_queue_router_<id>. Gated on the
+// env so single-replica deploys keep upstream default behavior. (Replaces our old
+// apps/ocpp-server/src/container.ts patch — that file was refactored into @citrineos/ocpp.)
+export function registerRouterMode(container: AwilixContainer): void {
+  if (!process.env.INSTANCE_IDENTIFIER) {
+    return;
+  }
+  container.register({
+    routerHandler: asFunction(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({ config, channelManager, logger }: any) =>
+        new RabbitMqReceiver({ config, channelManager, logger, routerMode: true }),
     ).singleton(),
   });
 }
