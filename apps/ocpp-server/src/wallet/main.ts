@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // ChargeMai wallet fork — alternate entrypoint. Deploy with:
 //   command: ["node", "dist/wallet/main.js"]  (k8s manifest; stock image otherwise)
-// Upstream index.ts stays untouched; keep this main() in sync with it on rebases
-// (rebase checklist: `git diff <old>..<new> -- apps/ocpp-server/src/index.ts`).
+// Mirrors the stock entry apps/ocpp-server/src/index.ts; keep this main() in sync
+// with it on rebases (rebase checklist: `git diff <old>..<new> -- apps/ocpp-server/src/index.ts`).
+// Wallet wiring uses the CitrineOSServer extension seams (packages/ocpp/src/server/
+// DEPENDENCY_INJECTION.md): registerAdditionalServices() to register/override
+// container tokens, onInitialized() to start the AMQP gates/consumers.
 
-import { loadBootstrapConfig } from '@citrineos/base';
+import { ConfigLoader } from '@citrineos/base';
+import { CitrineOSServer } from '@citrineos/ocpp';
 import { EventGroup } from '@citrineos/types';
-import { CitrineOSServer } from '../citrineOSServer.js';
-import { getSystemConfig } from '../config/index.js';
+import type { AwilixContainer } from 'awilix';
 import { RemoteStartConsumer, RemoteStopConsumer } from './consumers.js';
 import { PreparingGate, SuspendedEvGate } from './gates.js';
 import { assertWalletOverrides, registerWalletServices } from './registerWalletServices.js';
@@ -17,11 +20,17 @@ const on = (flag: string) => process.env[flag] === 'true';
 class WalletServer extends CitrineOSServer {
   private _walletStoppables: Array<{ stop: () => void | Promise<void> }> = [];
 
-  async initialize(): Promise<void> {
-    // Before super.initialize(): container is built (ctor) but no token has been
-    // resolved yet — equivalent timing to registering inside buildContainer.
-    registerWalletServices(this._container);
-    await super.initialize();
+  // Runs inside initContainer(), after buildContainer() and before any token is
+  // resolved — the documented seam for adding/overriding registrations. awilix
+  // register is last-write-wins, so our authorizationRepository/authorizers win.
+  protected registerAdditionalServices(container: AwilixContainer): void {
+    registerWalletServices(container);
+  }
+
+  // Runs after the container, message broker, modules and DB are all wired, before
+  // the server starts listening — the right point to start the AMQP gates/consumers.
+  protected async onInitialized(): Promise<void> {
+    await super.onInitialized();
     assertWalletOverrides(this._container);
 
     // Gates + consumers are constructed with plain `new` (not via awilix) so a
@@ -72,13 +81,8 @@ class WalletServer extends CitrineOSServer {
 }
 
 async function main() {
-  const bootstrapConfig = loadBootstrapConfig();
-  const config = await getSystemConfig(bootstrapConfig);
-  const server = new WalletServer(
-    process.env.APP_NAME?.toLowerCase() as EventGroup,
-    bootstrapConfig,
-    config,
-  );
+  const config = await ConfigLoader.loadConfig();
+  const server = new WalletServer(process.env.APP_NAME?.toLowerCase() as EventGroup, config);
   server.run().catch((error: any) => {
     console.error(error);
     process.exit(1);
