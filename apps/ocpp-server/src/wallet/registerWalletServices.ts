@@ -4,6 +4,7 @@
 // which is equivalent to registering at the end of buildContainer (awilix register
 // is last-write-wins). Root container required (strict mode + singletons).
 
+import { RabbitMqReceiver } from '@citrineos/ocpp';
 import { asClass, asFunction, type AwilixContainer } from 'awilix';
 import { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
 import { WalletRpcAuthorizer } from './WalletRpcAuthorizer.js';
@@ -27,13 +28,42 @@ export function registerWalletServices(container: AwilixContainer): void {
   });
 }
 
-// NOTE on multi-replica routing: we deliberately do NOT enable the receiver's
-// routerMode. beta5 module mode is multi-replica-safe via the shared-Redis
-// Connections claim in the WebSocket server (setIfNotExist(identifier, ...,
-// CacheNamespace.Connections) — a second pod is rejected with close 1013 before it
-// subscribes to the charger's queue), so no CALLRESULT round-robin occurs. routerMode
-// would only add fork drift + an INSTANCE_IDENTIFIER-uniqueness footgun for no gain at
-// our fleet size. The router therefore runs the stock dist/index.js entrypoint.
+// Multi-replica ROUTER MODE (upstream feat 610c7131c). beta5 ships the two-mode
+// RabbitMqReceiver — module mode = one queue per charger identifier; router mode =
+// ONE queue per router instance (`rabbit_queue_router_<instanceIdentifier>`) + a
+// headers-exchange binding per charger. At scale (hundreds→thousands of chargers)
+// router mode avoids the per-charger-queue explosion + reconnect-storm that module
+// mode hits. But stock beta5 never passes routerMode:true (container.ts registers
+// routerHandler without it), so we re-register routerHandler here with it ON.
+//
+// Scoped to routerHandler ONLY (the router's singleton receiver — module handlers are
+// never touched, so this is safe on the module server too, where routerHandler is not
+// resolved). Only invoked from the lean router entrypoint (dist/wallet/router-main.js).
+//
+// SAFETY (advisor): a per-instance queue is only correct if instanceIdentifier is
+// UNIQUE per pod — a shared id makes two pods consume one queue and round-robins ALL
+// traffic. So we HARD-FAIL if it is unset rather than fall back to the receiver's
+// ephemeral `router-${Date.now()}` default. The deploy sets it from the pod name
+// (valueFrom metadata.name → CITRINEOS_MESSAGEBROKER_AMQP_INSTANCEIDENTIFIER), which is
+// unique + stable per pod.
+export function registerRouterMode(container: AwilixContainer): void {
+  container.register({
+    routerHandler: asFunction(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({ config, channelManager, logger }: any) => {
+        const instanceId = config?.messageBroker?.amqp?.instanceIdentifier;
+        if (!instanceId) {
+          throw new Error(
+            'wallet: router mode requires messageBroker.amqp.instanceIdentifier ' +
+              '(env CITRINEOS_MESSAGEBROKER_AMQP_INSTANCEIDENTIFIER), unique per pod — ' +
+              'refusing to start the router without a unique instance queue.',
+          );
+        }
+        return new RabbitMqReceiver({ config, channelManager, logger, routerMode: true });
+      },
+    ).singleton(),
+  });
+}
 
 // Boot-time tripwire: upstream renaming a token would make our overrides silently
 // unapplied (awilix has no unknown-key error). Resolve back and verify.
