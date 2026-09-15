@@ -4,7 +4,6 @@
 // which is equivalent to registering at the end of buildContainer (awilix register
 // is last-write-wins). Root container required (strict mode + singletons).
 
-import { RabbitMqReceiver } from '@citrineos/ocpp';
 import { asClass, asFunction, type AwilixContainer } from 'awilix';
 import { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
 import { WalletRpcAuthorizer } from './WalletRpcAuthorizer.js';
@@ -28,28 +27,13 @@ export function registerWalletServices(container: AwilixContainer): void {
   });
 }
 
-// Multi-replica router mode. Upstream ships a two-mode RabbitMqReceiver (queue-per-
-// router-instance vs queue-per-charger) but registers `routerHandler` WITHOUT
-// routerMode, so it defaults OFF — which drops CALLRESULTs at >1 router replica:
-// the per-station queue is shared across every replica that ever served the station,
-// and RabbitMQ round-robins each response, so only the socket-owning pod can deliver.
-// Re-register routerHandler with routerMode ON. Enabled unconditionally (routerHandler
-// is the ROUTER's singleton receiver only — never a module handler, so modules are
-// unaffected), matching our previous image-level container.ts patch. The per-instance
-// queue name comes from config.messageBroker.amqp.instanceIdentifier
-// (CITRINEOS_util_messageBroker_amqp_instanceIdentifier env), which the receiver reads;
-// without it the receiver falls back to an ephemeral name — safe for single-replica.
-// NOTE: this only takes effect where our entrypoint runs registerAdditionalServices,
-// so the ROUTER deployment must run dist/wallet/main.js (not stock dist/index.js).
-export function registerRouterMode(container: AwilixContainer): void {
-  container.register({
-    routerHandler: asFunction(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ({ config, channelManager, logger }: any) =>
-        new RabbitMqReceiver({ config, channelManager, logger, routerMode: true }),
-    ).singleton(),
-  });
-}
+// NOTE on multi-replica routing: we deliberately do NOT enable the receiver's
+// routerMode. beta5 module mode is multi-replica-safe via the shared-Redis
+// Connections claim in the WebSocket server (setIfNotExist(identifier, ...,
+// CacheNamespace.Connections) — a second pod is rejected with close 1013 before it
+// subscribes to the charger's queue), so no CALLRESULT round-robin occurs. routerMode
+// would only add fork drift + an INSTANCE_IDENTIFIER-uniqueness footgun for no gain at
+// our fleet size. The router therefore runs the stock dist/index.js entrypoint.
 
 // Boot-time tripwire: upstream renaming a token would make our overrides silently
 // unapplied (awilix has no unknown-key error). Resolve back and verify.
