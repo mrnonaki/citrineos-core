@@ -13,11 +13,7 @@ import { EventGroup } from '@citrineos/types';
 import type { AwilixContainer } from 'awilix';
 import { RemoteStartConsumer, RemoteStopConsumer } from './consumers.js';
 import { PreparingGate, SuspendedEvGate } from './gates.js';
-import {
-  assertWalletOverrides,
-  registerRouterMode,
-  registerWalletServices,
-} from './registerWalletServices.js';
+import { assertWalletOverrides, registerWalletServices } from './registerWalletServices.js';
 
 const on = (flag: string) => process.env[flag] === 'true';
 
@@ -29,7 +25,6 @@ class WalletServer extends CitrineOSServer {
   // register is last-write-wins, so our authorizationRepository/authorizers win.
   protected registerAdditionalServices(container: AwilixContainer): void {
     registerWalletServices(container);
-    registerRouterMode(container);
   }
 
   // Runs after the container, message broker, modules and DB are all wired, before
