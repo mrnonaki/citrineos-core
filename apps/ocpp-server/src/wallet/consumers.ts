@@ -87,7 +87,7 @@ abstract class WalletConsumer {
   }
 
   protected async stationProtocol(stationId: string): Promise<string> {
-    const station = await this._deps.locationRepository.readChargingStationByStationId(
+    const station = await this._deps.locationRepository.readChargingStationByOcppConnectionName(
       TENANT_ID,
       stationId,
     );
@@ -160,9 +160,14 @@ export class RemoteStopConsumer extends WalletConsumer {
 
     if (transactionId) {
       // Plan-C idempotency: unknown tx → error; already-stopped → success, no dispatch.
-      const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(TENANT_ID, {
-        where: { ocppConnectionName: stationId, transactionId },
-      });
+      const st = await this._deps.locationRepository
+        .readChargingStationByOcppConnectionName(TENANT_ID, stationId)
+        .catch(() => null);
+      const txs = st
+        ? await this._deps.transactionEventRepository.transaction.readAllByQuery(TENANT_ID, {
+            where: { stationId: st.id, transactionId },
+          })
+        : [];
       const tx = txs?.[0];
       if (!tx) return { success: false, payload: `Unknown transaction: ${transactionId}` };
       if (!tx.isActive) {

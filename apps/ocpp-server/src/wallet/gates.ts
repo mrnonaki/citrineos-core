@@ -24,7 +24,8 @@
 //   suspended: req {tenantId, stationId, evseId, transactionId, connectorId?}
 //              rep {action:'Stop'|'Continue'}
 
-import { Connector, Evse } from '@citrineos/dal';
+import { sequelize as dalSequelize } from '@citrineos/dal';
+const { Connector, Evse, ChargingStation } = dalSequelize;
 import type { ILogObj, Logger } from 'tslog';
 import { AmqpRpc, RPC_TIMEOUT_MS } from './WalletRpcClient.js';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
@@ -44,9 +45,14 @@ export interface GateDeps {
   ocppSender: any;
 }
 
+async function stationNameById(stationDbId: number): Promise<string | undefined> {
+  const st = await ChargingStation.findByPk(stationDbId).catch(() => null);
+  return st?.ocppConnectionName ?? undefined;
+}
+
 async function stationProtocol(deps: GateDeps, tenantId: number, stationId: string): Promise<string | undefined> {
   try {
-    const station = await deps.locationRepository.readChargingStationByStationId(tenantId, stationId);
+    const station = await deps.locationRepository.readChargingStationByOcppConnectionName(tenantId, stationId);
     return station?.protocol ?? undefined;
   } catch {
     return undefined;
@@ -187,12 +193,12 @@ export class PreparingGate {
     // CRUD 'updated' rows can be PARTIAL (only touched columns + PK) — re-read by
     // PK whenever a needed field is missing, and use the re-read from there on.
     let row = eventRow;
-    if (row.ocppConnectionName == null || row.connectorId == null) {
+    if (row.stationId == null || row.connectorId == null) {
       row = (await Connector.findByPk(eventRow.id).catch(() => null)) ?? eventRow;
       if (row.status !== 'Preparing' && row.status !== 'Occupied') return; // state moved on
     }
     const tenantId = row.tenantId;
-    const stationId = row.ocppConnectionName;
+    const stationId = row.stationId != null ? await stationNameById(row.stationId) : undefined;
     const connectorId = row.connectorId;
     if (!stationId || connectorId == null) {
       this._logger.warn(`preparing gate: connector ${eventRow.id} unresolvable — skipping`);
@@ -220,7 +226,7 @@ export class PreparingGate {
       // starts a session on an occupied connector.
       const activeTxs = await this._deps.transactionEventRepository.transaction.readAllByQuery(
         tenantId,
-        { where: { ocppConnectionName: stationId, isActive: true } },
+        { where: { stationId: row.stationId, isActive: true } },
       );
       const busy = (activeTxs ?? []).some(
         (t: any) =>
@@ -336,10 +342,9 @@ export class SuspendedEvGate {
           );
           const cur = txs?.[0];
           if (!cur?.isActive || cur.chargingState !== 'SuspendedEV') return;
-          // attr(): Transaction.ocppConnectionName is class-field-shadowed upstream.
-          const stationId = attr<string>(cur, 'ocppConnectionName') ?? row.ocppConnectionName;
+          const stationId = cur.stationId != null ? await stationNameById(cur.stationId) : undefined;
           if (!stationId) {
-            this._logger.warn(`suspendedEV: tx ${row.transactionId} has no ocppConnectionName — skipping`);
+            this._logger.warn(`suspendedEV: tx ${row.transactionId} has no resolvable station — skipping`);
             return;
           }
           await this._fire(
@@ -373,8 +378,10 @@ export class SuspendedEvGate {
         // 1.6 has no chargingState on the tx — find the NEWEST active tx for this
         // station (stale never-stopped rows must not shadow the live session).
         // Prefer the tx linked to THIS connector when the linkage exists.
+        const stationName = cur.stationId != null ? await stationNameById(cur.stationId) : undefined;
+        if (!stationName) return;
         const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(row.tenantId, {
-          where: { ocppConnectionName: cur.ocppConnectionName, isActive: true },
+          where: { stationId: cur.stationId, isActive: true },
           order: [['createdAt', 'DESC']],
         });
         const tx =
@@ -384,7 +391,7 @@ export class SuspendedEvGate {
               (t.evseId != null && cur.evseId != null && t.evseId === cur.evseId),
           ) ?? txs?.[0];
         if (!tx) return;
-        await this._fire(row.tenantId, cur.ocppConnectionName, tx.transactionId, cur.connectorId);
+        await this._fire(row.tenantId, stationName, tx.transactionId, cur.connectorId);
       });
     }
   }

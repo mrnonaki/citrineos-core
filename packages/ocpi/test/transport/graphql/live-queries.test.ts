@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest';
-import { GET_LIVE_STATE_QUERY } from '../../src/graphql/queries/live-queries.js';
+import { GET_LIVE_STATE_QUERY } from '../../../src/transport/graphql/queries/live-queries.js';
 
 describe('GET_LIVE_STATE_QUERY', () => {
   it('scopes both legs by tenantId (Hasura runs as admin — no row-level tenancy)', () => {
