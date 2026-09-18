@@ -4,10 +4,10 @@
 
 import type Koa from 'koa';
 import { Ctx, Get, JsonController, UseBefore, useKoaServer } from 'routing-controllers';
-import { buildOcpiResponse, OcpiResponseStatusCode } from '../model/ocpi-response.js';
-import type { LiveService } from '../services/live-service.js';
-import { RegistrationAuthMiddleware } from '../util/middleware/auth-middleware.js';
-import { OcpiExceptionHandler } from '../util/middleware/ocpi-exception-handler.js';
+import { buildOcpiResponse, OcpiResponseStatusCode } from '../../types/ocpi-response.js';
+import type { LiveService } from '../../services/live-service.js';
+import { RegistrationAuthMiddleware } from '../middleware/auth-middleware.js';
+import { OcpiExceptionHandler } from '../middleware/ocpi-exception-handler.js';
 
 export interface LiveControllerDependencies {
   liveService: LiveService;

@@ -35,7 +35,7 @@ COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/
 COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc
 # static assets read from the image by k8s (hasura's copy-metadata initContainer)
 # and potentially by the app at runtime (rbac rules) — not part of dist/.
-COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/hasura-metadata /usr/local/apps/citrineos/apps/ocpp-server/hasura-metadata
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/db/hasura-metadata /usr/local/apps/citrineos/apps/ocpp-server/hasura-metadata
 COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/rbac-rules.json /usr/local/apps/citrineos/apps/ocpp-server/rbac-rules.json
 
 WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
