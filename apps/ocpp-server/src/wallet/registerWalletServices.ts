@@ -16,6 +16,19 @@ export function walletRpcEnabled(): boolean {
 }
 
 export function registerWalletServices(container: AwilixContainer): void {
+  // WalletAuthorizationRepository extends the SEQUELIZE repository. Upstream's
+  // CITRINEOS_USE_DRIZZLE=true swaps the stock registration to
+  // DrizzleAuthorizationRepository — our override would still win the token but
+  // silently lose the Drizzle implementation underneath (assertWalletOverrides
+  // cannot catch that: the instanceof check passes either way). Refuse to boot
+  // until the subclass is ported to the Drizzle repo.
+  if (process.env.CITRINEOS_USE_DRIZZLE === 'true') {
+    throw new Error(
+      'wallet: CITRINEOS_USE_DRIZZLE=true is not supported — ' +
+        'WalletAuthorizationRepository extends the Sequelize repository. ' +
+        'Unset the flag or port the wallet override to the Drizzle repository first.',
+    );
+  }
   container.register({
     authorizationRepository: asClass(WalletAuthorizationRepository).singleton(),
     walletRpcClient: asClass(WalletRpcClient).singleton(),

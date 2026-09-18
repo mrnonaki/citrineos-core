@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// ChargeMai wallet fork — flows 2 & 3, attached via repository CRUD events
-// (NOT handler subclasses): StatusNotificationResponse is `{}` in both protocols,
-// so gates can only react out-of-band — events give that with zero handler edits.
-// CAVEAT: CRUD events fire PRE-COMMIT (inside the sequelize tx) — every handler
-// defers via setImmediate, and every RPC-firing path re-reads current state first
-// (active-tx guard in PreparingGate; tx/connector re-read after the SuspendedEV
-// debounce) because with >1 replica the cancelling event may be processed by a
-// DIFFERENT replica than the one that armed the timer.
+// ChargeMai wallet fork — flows 2 & 3, triggered from the upstream `messages`
+// topic exchange (durable; the router publishes every OCPP frame with routing key
+// `frame.<direction>.<Action>`), NOT from repository CRUD events. Frames carry
+// `ocppConnectionName` + OCPP-numbered connector/evse ids directly, so the trigger
+// path needs no DB-FK resolution and cannot be broken by upstream schema refactors.
+// We bind ONE shared durable queue (`wallet.gates`) — each frame reaches exactly one
+// replica; that is safe because every RPC-firing path re-reads current DB state
+// first (active-tx guard in PreparingGate; tx/connector re-read after the
+// SuspendedEV debounce), so an arm on replica A survives its cancel landing on
+// replica B: the post-debounce re-read sees the resumed/ended state and bails.
 //
-// ID SEMANTICS (trap): CRUD rows carry DB PKs, not OCPP numbers.
+// ID SEMANTICS: frames carry OCPP wire numbers; DB rows carry PKs/FKs.
 //   Connectors.connectorId   = OCPP 1.6 per-station serial (the number on the wire)
 //   Connectors.evseId        = FK → Evses.id (DB PK — NOT an OCPP number)
 //   Evses.evseTypeId         = OCPP 2.0.1 evse serial
@@ -26,6 +28,7 @@
 
 import { sequelize as dalSequelize } from '@citrineos/dal';
 const { Connector, Evse, ChargingStation } = dalSequelize;
+import { FrameDirection, MESSAGES_EXCHANGE } from '@citrineos/types';
 import type { ILogObj, Logger } from 'tslog';
 import { AmqpRpc, RPC_TIMEOUT_MS } from './WalletRpcClient.js';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
@@ -43,6 +46,108 @@ export interface GateDeps {
   transactionEventRepository: any;
   authorizationRepository: WalletAuthorizationRepository;
   ocppSender: any;
+}
+
+// Frame event as published on the `messages` exchange (subset we consume).
+export interface GateFrameEvent {
+  tenantId: number;
+  ocppConnectionName: string;
+  protocol: string;
+  action?: string;
+  parsed: boolean;
+  payload?: any;
+}
+
+// name → ChargingStations.id, cached per process. Station rows are created once at
+// first boot and never re-keyed, so a plain Map is safe (no eviction needed at our
+// fleet size; a rename would need a pod restart, same as a config change).
+const _stationIds = new Map<string, number>();
+async function stationDbIdByName(tenantId: number, name: string): Promise<number | undefined> {
+  const key = `${tenantId}:${name}`;
+  const hit = _stationIds.get(key);
+  if (hit != null) return hit;
+  const st = await ChargingStation.findOne({
+    where: { tenantId, ocppConnectionName: name },
+  }).catch(() => null);
+  if (st?.id != null) _stationIds.set(key, st.id);
+  return st?.id ?? undefined;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Frames are published on RECEIPT — before the StatusNotification handler commits
+// the Connector/Evse rows — and StatusNotification is edge-triggered, so a missed
+// FIRST plug on a never-provisioned connector is NOT re-sent. Retry on a backoff
+// long enough to cover cold-connector provisioning (row creation) before giving up.
+// Only the pre-commit callers (preparing onFrame) need this; a post-debounce caller
+// (30s later) passes attempts=1 — if the row is missing by then, retry won't help.
+const ROW_RETRY_DELAYS_MS = [400, 800, 1500, 2500];
+
+// Drift detector: connectorRowFromFrame returning null for EVERY frame is the real
+// symptom of an upstream payload/schema change (frames still parse, the gates just
+// resolve nothing) — the one failure mode always-ack + per-frame warns would hide.
+// Count consecutive misses across both gates (one process-wide chokepoint) and
+// escalate warn→error; reset on any hit. A single misconfigured charger spamming an
+// unknown connector will also trip it — which is itself worth an error.
+let _consecutiveRowMisses = 0;
+function _noteRowResolution(logger: Logger<ILogObj>, hit: boolean): void {
+  if (hit) {
+    _consecutiveRowMisses = 0;
+    return;
+  }
+  _consecutiveRowMisses++;
+  if (_consecutiveRowMisses === 25) {
+    logger.error(
+      `gates: ${_consecutiveRowMisses} consecutive frames resolved NO connector row — ` +
+        `likely an upstream payload/schema drift or a persistently misconfigured station.`,
+    );
+  }
+}
+
+// Resolve the Connector DB row a frame refers to, via the upstream location
+// repository (tenant-aware, resolves ocppConnectionName→stationId itself, and
+// includes the Evse). `attempts` bounds the cold-start retry (1 = single-shot).
+async function connectorRowFromFrame(
+  deps: GateDeps,
+  evt: GateFrameEvent,
+  attempts = ROW_RETRY_DELAYS_MS.length + 1,
+): Promise<any | null> {
+  const { tenantId, ocppConnectionName: name } = evt;
+  const repo = deps.locationRepository;
+  const p = evt.payload ?? {};
+  const lookup = async (): Promise<any | null> => {
+    if (evt.protocol === 'ocpp1.6') {
+      // 1.6: payload.connectorId is the per-station serial == Connectors.connectorId.
+      return (
+        (await repo
+          .readConnectorByStationIdAndOcpp16ConnectorId(tenantId, name, p.connectorId)
+          .catch(() => null)) ?? null
+      );
+    }
+    // 2.x: payload.evseId is the OCPP evse serial, payload.connectorId the per-EVSE
+    // connector serial → EVSEType {id, connectorId}.
+    const byEvseType = await repo
+      .readConnectorByStationIdAndOcpp201EvseType(tenantId, name, {
+        id: p.evseId,
+        connectorId: p.connectorId,
+      })
+      .catch(() => null);
+    if (byEvseType) return byEvseType;
+    // 1-connector-per-EVSE fleet: the 2.x evse serial equals the 1.6 connector serial.
+    return (
+      (await repo
+        .readConnectorByStationIdAndOcpp16ConnectorId(tenantId, name, p.evseId)
+        .catch(() => null)) ?? null
+    );
+  };
+  let row = await lookup();
+  const retries = Math.min(Math.max(attempts - 1, 0), ROW_RETRY_DELAYS_MS.length);
+  for (let i = 0; row == null && i < retries; i++) {
+    await sleep(ROW_RETRY_DELAYS_MS[i]);
+    row = await lookup();
+  }
+  _noteRowResolution(deps.logger, row != null);
+  return row;
 }
 
 async function stationNameById(stationDbId: number): Promise<string | undefined> {
@@ -152,10 +257,9 @@ export class PreparingGate {
   private readonly _deps: GateDeps;
   private readonly _logger: Logger<ILogObj>;
   private readonly _rpc: AmqpRpc;
-  private readonly _listener = (rows: any[]) => this._onConnectorRows(rows);
-  // In-process in-flight guard: one StatusNotification can update the connector
-  // row more than once (two 'updated' emits back-to-back) and the Redis
-  // setIfNotExist may not be atomic under concurrency in every cache impl.
+  // In-process in-flight guard: a charger can repeat StatusNotification for the
+  // same plug event, and the Redis setIfNotExist may not be atomic under
+  // concurrency in every cache impl.
   private readonly _inFlight = new Set<string>();
 
   constructor(deps: GateDeps) {
@@ -169,39 +273,42 @@ export class PreparingGate {
     });
   }
 
-  start(): void {
-    const connectorRepo = this._deps.locationRepository.connector;
-    connectorRepo.on('created', this._listener);
-    connectorRepo.on('updated', this._listener);
-    this._logger.info('preparing gate listening on connector CRUD events');
+  stop(): void {}
+
+  /** StatusNotification frames only (GatesFrameSource filters by action). */
+  onFrame(evt: GateFrameEvent): void {
+    const status = evt.payload?.status ?? evt.payload?.connectorStatus;
+    if (status !== 'Preparing' && status !== 'Occupied') return;
+    setImmediate(() =>
+      void (async () => {
+        const row = await connectorRowFromFrame(this._deps, evt);
+        if (!row) {
+          this._logger.warn(
+            `preparing gate: no connector row for ${evt.ocppConnectionName} ${JSON.stringify(evt.payload)} — skipping`,
+          );
+          return;
+        }
+        await this._fire(evt, row);
+      })().catch((err) => this._logger.warn(`preparing gate frame error: ${err}`)),
+    );
   }
 
-  stop(): void {
-    const connectorRepo = this._deps.locationRepository.connector;
-    connectorRepo.off('created', this._listener);
-    connectorRepo.off('updated', this._listener);
-  }
-
-  private _onConnectorRows(rows: any[]): void {
-    for (const row of rows ?? []) {
-      if (row?.status !== 'Preparing' && row?.status !== 'Occupied') continue;
-      setImmediate(() => void this._fire(row));
-    }
-  }
-
-  private async _fire(eventRow: any): Promise<void> {
-    // CRUD 'updated' rows can be PARTIAL (only touched columns + PK) — re-read by
-    // PK whenever a needed field is missing, and use the re-read from there on.
-    let row = eventRow;
-    if (row.stationId == null || row.connectorId == null) {
-      row = (await Connector.findByPk(eventRow.id).catch(() => null)) ?? eventRow;
-      if (row.status !== 'Preparing' && row.status !== 'Occupied') return; // state moved on
-    }
-    const tenantId = row.tenantId;
-    const stationId = row.stationId != null ? await stationNameById(row.stationId) : undefined;
-    const connectorId = row.connectorId;
-    if (!stationId || connectorId == null) {
-      this._logger.warn(`preparing gate: connector ${eventRow.id} unresolvable — skipping`);
+  private async _fire(evt: GateFrameEvent, row: any): Promise<void> {
+    const tenantId = evt.tenantId;
+    const stationId = evt.ocppConnectionName;
+    // OCPP wire numbers come from the FRAME, not the DB row: 2.x Connector rows
+    // store their serial in evseTypeConnectorId/Evses.evseTypeId, leaving
+    // Connectors.connectorId NULL — re-deriving from the row drops every 2.x plug.
+    const p = evt.payload ?? {};
+    const is16 = evt.protocol === 'ocpp1.6';
+    // ChargeMai identity == the 1.6 per-station connector serial; for 2.x that maps
+    // to the evse serial (1 connector per EVSE fleet-wide).
+    const connectorId = (is16 ? p.connectorId : (p.evseId ?? p.connectorId)) as number | undefined;
+    const ocpp201EvseId = (p.evseId ?? p.connectorId) as number | undefined;
+    if (connectorId == null) {
+      this._logger.warn(
+        `preparing gate: no wire connector id in frame for ${stationId} ${JSON.stringify(p)} — skipping`,
+      );
       return;
     }
     const dedupeKey = `prep:${tenantId}:${stationId}:${connectorId}`;
@@ -254,19 +361,14 @@ export class PreparingGate {
         return;
       }
       await this._deps.authorizationRepository.ensureAccepted(tenantId, reply.idTag, reply.idTokenType);
-      // Connector row: connectorId = 1.6 serial; evseId = Evses DB FK → resolve
-      // the 2.0.1 serial via Evses.evseTypeId (fall back to the connector serial —
-      // correct while the fleet is 1 connector per EVSE).
-      let ocpp201EvseId = connectorId;
-      if (row.evseId != null) {
-        const evse = await Evse.findByPk(row.evseId).catch(() => null);
-        if (evse?.evseTypeId != null) ocpp201EvseId = evse.evseTypeId;
-      }
+      // Wire numbers straight from the frame: dispatchRemoteStart picks by the
+      // station's live protocol, so pass both — the 1.6 connector serial and the
+      // 2.0.1 evse serial.
       await dispatchRemoteStart(
         this._deps,
         tenantId,
         stationId,
-        { ocpp16ConnectorId: connectorId, ocpp201EvseId },
+        { ocpp16ConnectorId: (p.connectorId ?? connectorId) as number, ocpp201EvseId: ocpp201EvseId ?? connectorId },
         reply.idTag,
         reply.idTokenType,
       );
@@ -290,8 +392,6 @@ export class SuspendedEvGate {
   private readonly _logger: Logger<ILogObj>;
   private readonly _rpc: AmqpRpc;
   private readonly _timers = new Map<string, NodeJS.Timeout>();
-  private readonly _txListener = (rows: any[]) => this._onTransactionRows(rows);
-  private readonly _connListener = (rows: any[]) => this._onConnectorRows(rows);
 
   constructor(deps: GateDeps) {
     this._deps = deps;
@@ -304,96 +404,97 @@ export class SuspendedEvGate {
     });
   }
 
-  start(): void {
-    this._deps.transactionEventRepository.transaction.on('updated', this._txListener);
-    const connectorRepo = this._deps.locationRepository.connector;
-    connectorRepo.on('updated', this._connListener);
-    this._logger.info('suspendedEV gate listening on transaction/connector CRUD events');
-  }
-
   stop(): void {
-    this._deps.transactionEventRepository.transaction.off('updated', this._txListener);
-    this._deps.locationRepository.connector.off('updated', this._connListener);
     for (const t of this._timers.values()) clearTimeout(t);
     this._timers.clear();
   }
 
-  private _onTransactionRows(rows: any[]): void {
-    for (const row of rows ?? []) {
-      if (!row) continue;
-      // Key must NOT include fields that may be absent on PARTIAL event rows
-      // (arm on a full row + cancel on a partial one would miss the timer), and
-      // must be PK-based: OCPP transactionId repeats across stations (unique is
-      // (stationId, transactionId) in v2).
-      const key = `${row.tenantId}:tx:${row.id}`;
-      if (row.isActive && row.chargingState === 'SuspendedEV') {
-        this._schedule(key, async () => {
-          // Post-debounce re-read: the resume/end event may have been processed
-          // by ANOTHER replica (its cancel can't reach our timer), so trust the
-          // DB, not the event that armed us. Re-read by PK — CRUD 'updated' rows
-          // can be PARTIAL (only touched columns), but the PK is always present,
-          // and v2's Transactions unique is (stationId, transactionId), so the
-          // OCPP transactionId ALONE can match another station's tx (observed on
-          // kind: 1.6 tx id 7 on two stations). Every downstream value comes
-          // from the re-read row, not the event row.
-          const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(
-            row.tenantId,
-            { where: { id: row.id } },
-          );
-          const cur = txs?.[0];
-          if (!cur?.isActive || cur.chargingState !== 'SuspendedEV') return;
-          const stationId = cur.stationId != null ? await stationNameById(cur.stationId) : undefined;
-          if (!stationId) {
-            this._logger.warn(`suspendedEV: tx ${row.transactionId} has no resolvable station — skipping`);
-            return;
-          }
-          await this._fire(
-            row.tenantId,
-            stationId,
-            row.transactionId,
-            await ocppEvseIdForTx(cur, this._logger),
-          );
-        });
-      } else if (this._timers.has(key)) {
-        // Resumed charging OR ended (isActive=false) before the debounce elapsed
-        // — cancel. NOTE: ended rows MUST reach this branch; guarding the loop
-        // with `!row.isActive → continue` made it unreachable (fixed).
-        clearTimeout(this._timers.get(key)!);
-        this._timers.delete(key);
-      }
+  /** Dispatch by frame action (GatesFrameSource routes StatusNotification + TransactionEvent here). */
+  onFrame(evt: GateFrameEvent): void {
+    if (evt.action === 'TransactionEvent') this._onTransactionEventFrame(evt);
+    else if (evt.action === 'StatusNotification' && evt.protocol === 'ocpp1.6')
+      this._onStatusNotification16Frame(evt);
+  }
+
+  // 2.x: TransactionEvent frames carry (station, transactionId, chargingState)
+  // directly — the timer key is wire identity (v2's Transactions unique is
+  // (stationId, transactionId), so the key must include the station).
+  private _onTransactionEventFrame(evt: GateFrameEvent): void {
+    const p = evt.payload ?? {};
+    const txId = p.transactionInfo?.transactionId;
+    if (txId == null) return;
+    const key = `${evt.tenantId}:tx:${evt.ocppConnectionName}:${txId}`;
+    const suspended = p.eventType !== 'Ended' && p.transactionInfo?.chargingState === 'SuspendedEV';
+    if (suspended) {
+      this._schedule(key, async () => {
+        // Post-debounce re-read: the resume/end frame may have been consumed by
+        // ANOTHER replica (shared queue — its cancel can't reach our timer), so
+        // trust the DB, not the frame that armed us. Every downstream value
+        // comes from the re-read row.
+        const sid = await stationDbIdByName(evt.tenantId, evt.ocppConnectionName);
+        if (sid == null) return;
+        const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(
+          evt.tenantId,
+          { where: { stationId: sid, transactionId: txId } },
+        );
+        const cur = txs?.[0];
+        if (!cur?.isActive || cur.chargingState !== 'SuspendedEV') return;
+        await this._fire(
+          evt.tenantId,
+          evt.ocppConnectionName,
+          String(txId),
+          await ocppEvseIdForTx(cur, this._logger),
+        );
+      });
+    } else if (this._timers.has(key)) {
+      // Resumed charging OR Ended before the debounce elapsed — cancel. The
+      // post-debounce re-read is the safety net when this cancel lands on a
+      // different replica than the arm.
+      clearTimeout(this._timers.get(key)!);
+      this._timers.delete(key);
     }
   }
 
-  private _onConnectorRows(rows: any[]): void {
-    for (const row of rows ?? []) {
-      if (row?.status !== 'SuspendedEV') continue;
-      // PK-based key: partial event rows always carry the PK.
-      const key = `${row.tenantId}:conn:${row.id}`;
-      this._schedule(key, async () => {
-        // Post-debounce re-read (multi-replica: the resume event may have landed
-        // on another replica; event rows can be PARTIAL) — bail unless the
-        // connector is still SuspendedEV, and take every field from the re-read.
-        const cur = await Connector.findByPk(row.id).catch(() => null);
-        if (!cur || cur.status !== 'SuspendedEV') return;
-        // 1.6 has no chargingState on the tx — find the NEWEST active tx for this
-        // station (stale never-stopped rows must not shadow the live session).
-        // Prefer the tx linked to THIS connector when the linkage exists.
-        const stationName = cur.stationId != null ? await stationNameById(cur.stationId) : undefined;
-        if (!stationName) return;
-        const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(row.tenantId, {
+  // 1.6: connector-status frames. SuspendedEV arms; any other status for the same
+  // connector cancels (StopTransaction needs no explicit cancel — the post-debounce
+  // re-read sees the connector/tx state moved on and bails).
+  private _onStatusNotification16Frame(evt: GateFrameEvent): void {
+    const p = evt.payload ?? {};
+    if (p.connectorId == null) return;
+    const key = `${evt.tenantId}:conn:${evt.ocppConnectionName}:${p.connectorId}`;
+    if (p.status !== 'SuspendedEV') {
+      if (this._timers.has(key)) {
+        clearTimeout(this._timers.get(key)!);
+        this._timers.delete(key);
+      }
+      return;
+    }
+    this._schedule(key, async () => {
+      // Post-debounce re-read from the DB (shared queue: the resume frame may have
+      // landed on another replica) — bail unless the connector is still SuspendedEV,
+      // and take every field from the re-read row. Single-shot: 30s after the frame
+      // the row must exist; cold-start retry would only waste queries.
+      const cur = await connectorRowFromFrame(this._deps, evt, 1);
+      if (!cur || cur.status !== 'SuspendedEV') return;
+      // 1.6 has no chargingState on the tx — find the NEWEST active tx for this
+      // station (stale never-stopped rows must not shadow the live session).
+      // Prefer the tx linked to THIS connector when the linkage exists.
+      const txs = await this._deps.transactionEventRepository.transaction.readAllByQuery(
+        evt.tenantId,
+        {
           where: { stationId: cur.stationId, isActive: true },
           order: [['createdAt', 'DESC']],
-        });
-        const tx =
-          txs?.find(
-            (t: any) =>
-              (t.connectorId != null && t.connectorId === cur.id) ||
-              (t.evseId != null && cur.evseId != null && t.evseId === cur.evseId),
-          ) ?? txs?.[0];
-        if (!tx) return;
-        await this._fire(row.tenantId, stationName, tx.transactionId, cur.connectorId);
-      });
-    }
+        },
+      );
+      const tx =
+        txs?.find(
+          (t: any) =>
+            (t.connectorId != null && t.connectorId === cur.id) ||
+            (t.evseId != null && cur.evseId != null && t.evseId === cur.evseId),
+        ) ?? txs?.[0];
+      if (!tx) return;
+      await this._fire(evt.tenantId, evt.ocppConnectionName, tx.transactionId, cur.connectorId);
+    });
   }
 
   private _schedule(key: string, action: () => Promise<void> | void): void {
@@ -441,5 +542,108 @@ export class SuspendedEvGate {
     } else {
       this._logger.debug(`suspendedEV gate continue for tx ${transactionId}`);
     }
+  }
+}
+
+// ---- Frame source: one shared durable queue on the upstream `messages` exchange ----
+// The router publishes every frame (`frame.<direction>.<Action>`, topic, durable);
+// we bind only the inbound actions the gates care about. Always ack: gate decisions
+// are re-validated against the DB before any RPC, so a dropped frame degrades to
+// "no consult this event", never to a wrong decision — and requeue loops on a
+// poison frame would be worse.
+const GATES_QUEUE = process.env.WALLET_GATES_QUEUE ?? 'wallet.gates';
+// The exchange name + routing-key FORMAT are upstream-owned and were the real
+// churn risk — anchor them to the exported constants (MESSAGES_EXCHANGE,
+// FrameDirection) so a rename is a compile error here, not a silent "bound to a
+// dead pattern, no frames, boot log still green" runtime failure. The action
+// segments are OCPP protocol identifiers (stable across CitrineOS versions), so
+// literals are fine — CallAction is a type-only export and can't be used as a value.
+const STATUS_ACTION = 'StatusNotification';
+const TX_ACTION = 'TransactionEvent';
+const GATE_BINDINGS = [
+  `frame.${FrameDirection.Inbound}.${STATUS_ACTION}`,
+  `frame.${FrameDirection.Inbound}.${TX_ACTION}`,
+];
+
+export class GatesFrameSource {
+  private readonly _logger: Logger<ILogObj>;
+  private readonly _channelManager: any;
+  private readonly _preparing?: PreparingGate;
+  private readonly _suspended?: SuspendedEvGate;
+  private _channel: any;
+  private _consumerTag?: string;
+  // Set on stop(): channel.cancel() stops NEW deliveries, but frames already
+  // prefetched (≤25) are still delivered to this callback — drain them (ack, no
+  // dispatch) so none arms a gate/RemoteStart after we begin shutdown.
+  private _draining = false;
+  // Guards ONLY the sync path (malformed JSON / a frame we can't even route). Real
+  // upstream payload drift does NOT surface here — it parses fine and flows into the
+  // async gates, where connectorRowFromFrame's miss-counter catches it instead.
+  private _consecutiveFailures = 0;
+
+  constructor(deps: GateDeps, gates: { preparing?: PreparingGate; suspended?: SuspendedEvGate }) {
+    this._logger = deps.logger.getSubLogger({ name: this.constructor.name });
+    this._channelManager = deps.channelManager;
+    this._preparing = gates.preparing;
+    this._suspended = gates.suspended;
+  }
+
+  async start(): Promise<void> {
+    const channel = await this._channelManager.getChannel('gates-frames');
+    this._channel = channel;
+    // Idempotent, matches the publisher's declaration exactly (mismatched args 406).
+    await channel.assertExchange(MESSAGES_EXCHANGE, 'topic', { durable: true });
+    await channel.assertQueue(GATES_QUEUE, { durable: true, autoDelete: false });
+    for (const key of GATE_BINDINGS) {
+      await channel.bindQueue(GATES_QUEUE, MESSAGES_EXCHANGE, key);
+    }
+    await channel.prefetch(25);
+    const { consumerTag } = await channel.consume(GATES_QUEUE, (msg: any) => {
+      if (!msg) return;
+      if (this._draining) {
+        channel.ack(msg);
+        return;
+      }
+      try {
+        const evt: GateFrameEvent = JSON.parse(msg.content.toString());
+        // Unparsed-path frames carry no payload — nothing to gate on.
+        if (evt?.parsed && evt.payload != null && evt.ocppConnectionName) {
+          if (evt.action === STATUS_ACTION) {
+            this._preparing?.onFrame(evt);
+            this._suspended?.onFrame(evt);
+          } else if (evt.action === TX_ACTION) {
+            this._suspended?.onFrame(evt);
+          }
+        }
+        this._consecutiveFailures = 0;
+      } catch (err) {
+        // Only malformed/unroutable frames reach here (parse or sync-dispatch throw).
+        this._consecutiveFailures++;
+        const level = this._consecutiveFailures >= 20 ? 'error' : 'warn';
+        this._logger[level](
+          `gates frame parse/dispatch failed (${this._consecutiveFailures} in a row): ${err}`,
+        );
+      } finally {
+        channel.ack(msg);
+      }
+    });
+    this._consumerTag = consumerTag;
+    this._logger.info(
+      `gates consuming ${GATES_QUEUE} <- ${MESSAGES_EXCHANGE} [${GATE_BINDINGS.join(', ')}]`,
+    );
+  }
+
+  async stop(): Promise<void> {
+    // Drain first (in-flight prefetched frames ack without dispatching), then cancel
+    // the consumer so no new frame dispatches a gate (RemoteStart/Stop) mid-drain.
+    this._draining = true;
+    if (this._channel && this._consumerTag) {
+      try {
+        await this._channel.cancel(this._consumerTag);
+      } catch {
+        /* channel already closing */
+      }
+    }
+    this._consumerTag = undefined;
   }
 }

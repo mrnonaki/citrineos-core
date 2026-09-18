@@ -7,8 +7,10 @@
 // stub row and return it, letting WalletRpcAuthorizer make the real decision.
 //
 // Stub-row invariants (violating any of these silently bypasses or breaks the gate):
-//   1. status must be the literal 'Accepted' — a NULL status short-circuits to
-//      Accepted in the 1.6 paths WITHOUT running authorizers.
+//   1. status must be the literal 'Accepted' — upstream (next, post-beta4) REJECTS
+//      a NULL status outright on the 1.6 paths (authorize-request-ocpp-16-handler +
+//      TransactionService StartTransaction both fail closed on null), and only an
+//      'Accepted' stored status lets the authorizer chain run at all.
 //   2. Exactly one row per (tenantId, idToken) — regardless of idTokenType. 1.6
 //      Authorize has NO type so it queries by idToken alone; if 1.6 (type NULL) and
 //      2.x (type MacAddress) each stub their own row for the same value, the 1.6
