@@ -12,7 +12,7 @@ import { CitrineOSServer } from '@citrineos/ocpp';
 import { EventGroup } from '@citrineos/types';
 import type { AwilixContainer } from 'awilix';
 import { RemoteStartConsumer, RemoteStopConsumer } from './consumers.js';
-import { PreparingGate, SuspendedEvGate } from './gates.js';
+import { GatesFrameSource, PreparingGate, SuspendedEvGate } from './gates.js';
 import { assertWalletOverrides, registerWalletServices } from './registerWalletServices.js';
 
 const on = (flag: string) => process.env[flag] === 'true';
@@ -46,16 +46,19 @@ class WalletServer extends CitrineOSServer {
       ocppSender: scope.resolve('ocppSender') as any,
     };
 
-    if (on('RABBITMQ_PREPARING')) {
-      const gate = new PreparingGate(deps);
-      gate.start();
-      this._walletStoppables.push(gate);
+    // Gates are triggered from the upstream `messages` frame exchange (shared
+    // durable queue) — one consumer feeds both, each gate filters its actions.
+    // Push the frame source FIRST so shutdown cancels the consumer before the gates
+    // tear down their timers (no frame can arm a timer we just cleared).
+    const preparing = on('RABBITMQ_PREPARING') ? new PreparingGate(deps) : undefined;
+    const suspended = on('RABBITMQ_SUSPENDED') ? new SuspendedEvGate(deps) : undefined;
+    if (preparing || suspended) {
+      const frames = new GatesFrameSource(deps, { preparing, suspended });
+      await frames.start();
+      this._walletStoppables.push(frames);
     }
-    if (on('RABBITMQ_SUSPENDED')) {
-      const gate = new SuspendedEvGate(deps);
-      gate.start();
-      this._walletStoppables.push(gate);
-    }
+    if (preparing) this._walletStoppables.push(preparing);
+    if (suspended) this._walletStoppables.push(suspended);
     if (on('RABBITMQ_REMOTESTART')) {
       const consumer = new RemoteStartConsumer(deps);
       await consumer.start();
