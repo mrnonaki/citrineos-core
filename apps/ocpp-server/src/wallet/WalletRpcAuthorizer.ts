@@ -89,7 +89,7 @@ export class WalletRpcAuthorizer {
 
   private async _clampForProtocol(context: IMessageContext, status: string): Promise<string> {
     try {
-      const station = await this._locationRepository.readChargingStationByStationId(
+      const station = await this._locationRepository.readChargingStationByOcppConnectionName(
         context.tenantId,
         context.ocppConnectionName,
       );

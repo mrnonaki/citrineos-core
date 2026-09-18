@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { IOcpiGraphqlClient } from '../graphql/index.js';
-import { GET_LIVE_STATE_QUERY } from '../graphql/index.js';
-import type { OcpiGraphqlDependencies } from '../dependencies.js';
+import type { IOcpiGraphqlClient } from '../transport/graphql/ocpi-graphql-client.js';
+import { GET_LIVE_STATE_QUERY } from '../transport/graphql/queries/live-queries.js';
+import type { OcpiGraphqlDependencies } from '../server/dependencies.js';
 
 /** SoC is rounded to this step before leaving the instance (privacy fuzzing). */
 export const SOC_STEP_PCT = 5;
