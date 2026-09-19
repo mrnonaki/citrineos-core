@@ -110,11 +110,17 @@ function pgConfig() {
   } as never;
 }
 
-function aDtoEvent() {
+function aDtoEvent(eventId = 'evt-42', payload: { id: number } = { id: 7 }) {
   return new DtoEvent(
-    'evt-42',
+    eventId,
     { eventType: DtoEventType.INSERT, objectType: DtoEventObjectType.Location },
-    { id: 7 },
+    payload,
+  );
+}
+
+function publishedEventIds(channel: ReturnType<typeof aChannel>): string[] {
+  return channel.publish.mock.calls.map(
+    (c) => (c[3] as { headers: { eventId: string } }).headers.eventId,
   );
 }
 
@@ -173,11 +179,14 @@ describe('RabbitMqDtoSender', () => {
     });
   });
 
-  it('sendEvent without an open channel throws', async () => {
-    const sender = new RabbitMqDtoSender({ config: amqpConfig(), logger: aLogger() } as never);
+  it('sendEvent without an open channel buffers the event instead of rejecting', async () => {
+    const logger = aLogger();
+    const sender = new RabbitMqDtoSender({ config: amqpConfig(), logger } as never);
 
-    await expect(sender.sendEvent(aDtoEvent())).rejects.toThrow(
-      'RabbitMQ is down. Cannot send message.',
+    await expect(sender.sendEvent(aDtoEvent())).resolves.toBe(false);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toBe(
+      'RabbitMQ channel unavailable; buffered event evt-42 for later publish (1 pending).',
     );
   });
 
@@ -232,6 +241,67 @@ describe('RabbitMqDtoSender', () => {
     await sender.sendEvent(aDtoEvent());
     expect(channel2.publish).toHaveBeenCalledTimes(1);
     expect(channel1.publish).not.toHaveBeenCalled();
+  });
+
+  /** A sender whose connection has just dropped; the reconnect stays pending until released. */
+  async function senderInOutage() {
+    const channel1 = aChannel();
+    const conn1 = aConnection(channel1);
+    const channel2 = aChannel();
+    let release: () => void = () => {};
+    amqp.connect.mockResolvedValueOnce(conn1).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(aConnection(channel2));
+        }),
+    );
+    const logger = aLogger();
+    const sender = new RabbitMqDtoSender({ config: amqpConfig(), logger } as never);
+    await sender.init();
+    const closeHandler = conn1.connection.on.mock.calls.filter((c) => c[0] === 'close')[0][1] as (
+      ...args: unknown[]
+    ) => void;
+    closeHandler();
+    return { sender, channel1, channel2, logger, reconnect: () => release() };
+  }
+
+  it('events buffered while the broker is down are replayed in order once it is back', async () => {
+    const { sender, channel1, channel2, logger, reconnect } = await senderInOutage();
+
+    await expect(sender.sendEvent(aDtoEvent('evt-1', { id: 1 }))).resolves.toBe(false);
+    await expect(sender.sendEvent(aDtoEvent('evt-2', { id: 2 }))).resolves.toBe(false);
+    expect(channel1.publish).not.toHaveBeenCalled();
+    expect(channel2.publish).not.toHaveBeenCalled();
+
+    reconnect();
+    await vi.waitFor(() => expect(channel2.publish).toHaveBeenCalledTimes(2));
+
+    expect(publishedEventIds(channel2)).toEqual(['evt-1', 'evt-2']);
+    expect(logger.info).toHaveBeenCalledWith('Replaying 2 buffered event(s) to RabbitMQ.');
+
+    // Direct path again once the backlog is drained.
+    await expect(sender.sendEvent(aDtoEvent('evt-3', { id: 3 }))).resolves.toBe(true);
+    expect(publishedEventIds(channel2)).toEqual(['evt-1', 'evt-2', 'evt-3']);
+  });
+
+  it('the outage buffer is bounded: past 1000 events the oldest is dropped with a warning', async () => {
+    const { sender, channel2, logger, reconnect } = await senderInOutage();
+
+    for (let i = 0; i < 1001; i++) {
+      await sender.sendEvent(aDtoEvent(`evt-${i}`, { id: i }));
+    }
+
+    const drops = logger.warn.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('dropping oldest'),
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops[0][0]).toBe('Pending-event buffer is full (1000); dropping oldest event evt-0.');
+
+    reconnect();
+    await vi.waitFor(() => expect(channel2.publish).toHaveBeenCalledTimes(1000));
+    const ids = publishedEventIds(channel2);
+    expect(ids[0]).toBe('evt-1');
+    expect(ids[999]).toBe('evt-1000');
   });
 });
 
@@ -595,6 +665,46 @@ describe('PgNotifyEventSubscriber', () => {
     expect(handleEvent).not.toHaveBeenCalled();
     expect(handleError).toHaveBeenCalledTimes(1);
     expect(handleError.mock.calls[0][0]).toBeInstanceOf(SyntaxError);
+  });
+
+  it('a rejecting async handler is reported to handleError instead of escaping the emitter', async () => {
+    const { subscriber, client, logger } = buildSubscriber();
+    await subscriber.init();
+    const failure = new Error('RabbitMQ is down. Cannot send message.');
+    const handleEvent = vi.fn().mockRejectedValue(failure);
+    const handleError = vi.fn();
+    await subscriber.subscribe('tariff-events', handleEvent, handleError);
+
+    // Same shape as pg's own dispatch: a plain emitter callback with no promise plumbing.
+    expect(() =>
+      client.emit('notification', {
+        channel: 'tariff-events',
+        payload: JSON.stringify({ operation: 'UPDATE', data: { id: 7 } }),
+      }),
+    ).not.toThrow();
+
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(failure));
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error.mock.calls[0][0]).toBe('Failed to handle notification on "tariff-events":');
+  });
+
+  it('a synchronously throwing handler is reported to handleError', async () => {
+    const { subscriber, client } = buildSubscriber();
+    await subscriber.init();
+    const failure = new Error('boom');
+    const handleEvent = vi.fn(() => {
+      throw failure;
+    });
+    const handleError = vi.fn();
+    await subscriber.subscribe('tariff-events', handleEvent, handleError);
+
+    client.emit('notification', {
+      channel: 'tariff-events',
+      payload: JSON.stringify({ operation: 'UPDATE', data: { id: 7 } }),
+    });
+
+    expect(handleError).toHaveBeenCalledTimes(1);
+    expect(handleError).toHaveBeenCalledWith(failure);
   });
 
   it('notification on a channel without a handler is dropped', async () => {

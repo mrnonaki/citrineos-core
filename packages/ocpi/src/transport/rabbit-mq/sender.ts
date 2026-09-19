@@ -17,6 +17,8 @@ export class RabbitMqDtoSender extends AbstractDtoEventSender implements IDtoEve
    */
   private static readonly QUEUE_PREFIX = 'amqp_queue_';
   private static readonly RECONNECT_DELAY = 5000;
+  /** Upper bound of events buffered while the broker is unreachable; the oldest is dropped beyond it. */
+  private static readonly MAX_PENDING_EVENTS = 1000;
 
   /**
    * Fields
@@ -25,6 +27,9 @@ export class RabbitMqDtoSender extends AbstractDtoEventSender implements IDtoEve
   protected _channel?: amqplib.Channel;
   private _reconnecting = false;
   private _abortReconnectController?: AbortController;
+  /** Events received while the channel was down, replayed in FIFO order once it is back. */
+  private _pending: IDtoEvent<IDtoPayload>[] = [];
+  private _flushing = false;
 
   /**
    * Constructor for the class.
@@ -49,41 +54,21 @@ export class RabbitMqDtoSender extends AbstractDtoEventSender implements IDtoEve
    * Sends a Dto event to a RabbitMQ exchange.
    *
    * Publishes the provided event to the configured RabbitMQ exchange using the current channel.
-   * Throws an error if the RabbitMQ channel is not available.
+   * While the broker is unreachable (or an earlier backlog is still being replayed) the event is
+   * buffered — bounded, FIFO — and replayed once the connection is back, so a broker blip neither
+   * rejects into the caller (a pg NOTIFY emitter callback, where that is fatal) nor reorders events.
    *
    * @param event - The Dto event to be sent.
-   * @returns A promise that resolves to an object indicating whether the message was successfully published.
-   * @throws {Error} If the RabbitMQ channel is not available.
+   * @returns A promise that resolves to true when the event was handed to the channel, false when
+   *   it was buffered for later replay.
    */
   async sendEvent(event: IDtoEvent<IDtoPayload>): Promise<boolean> {
-    const exchange = this._config.messageBroker?.amqp?.exchange as string;
-    if (!this._channel) {
-      throw new Error('RabbitMQ is down. Cannot send message.');
+    if (!this._channel || this._pending.length > 0) {
+      this._enqueue(event);
+      void this._flushPending();
+      return false;
     }
-    await this._channel.assertExchange(exchange, 'headers', { durable: false });
-    /*await channel.assertQueue(queueName, {
-      durable: false,
-      autoDelete: true,
-      exclusive: false,
-    });*/
-    const channel = this._channel;
-
-    this._logger.debug(`Publishing to ${exchange}:`, event);
-
-    const success = channel.publish(
-      exchange || '',
-      '',
-      Buffer.from(JSON.stringify(instanceToPlain(event)), 'utf-8'),
-      {
-        contentEncoding: 'utf-8',
-        contentType: 'application/json',
-        headers: {
-          ...event._context,
-          eventId: event._eventId,
-        },
-      },
-    );
-    return success;
+    return this._publish(this._channel, event);
   }
 
   /**
@@ -178,6 +163,88 @@ export class RabbitMqDtoSender extends AbstractDtoEventSender implements IDtoEve
       this._logger.error('Failed to reconnect to RabbitMQ (context: _handleDisconnect)', err);
     } finally {
       this._reconnecting = false;
+    }
+    await this._flushPending();
+  }
+
+  /**
+   * Publishes one event on the given channel.
+   */
+  private async _publish(
+    channel: amqplib.Channel,
+    event: IDtoEvent<IDtoPayload>,
+  ): Promise<boolean> {
+    const exchange = this._config.messageBroker?.amqp?.exchange as string;
+    await channel.assertExchange(exchange, 'headers', { durable: false });
+    /*await channel.assertQueue(queueName, {
+      durable: false,
+      autoDelete: true,
+      exclusive: false,
+    });*/
+
+    this._logger.debug(`Publishing to ${exchange}:`, event);
+
+    return channel.publish(
+      exchange || '',
+      '',
+      Buffer.from(JSON.stringify(instanceToPlain(event)), 'utf-8'),
+      {
+        contentEncoding: 'utf-8',
+        contentType: 'application/json',
+        headers: {
+          ...event._context,
+          eventId: event._eventId,
+        },
+      },
+    );
+  }
+
+  /**
+   * Buffers an event for replay. The buffer is bounded: when full, the oldest event is dropped
+   * (with a warning) so a long outage cannot grow memory without limit.
+   */
+  private _enqueue(event: IDtoEvent<IDtoPayload>): void {
+    if (this._pending.length >= RabbitMqDtoSender.MAX_PENDING_EVENTS) {
+      const dropped = this._pending.shift();
+      this._logger.warn(
+        `Pending-event buffer is full (${RabbitMqDtoSender.MAX_PENDING_EVENTS}); dropping oldest event ${dropped?._eventId}.`,
+      );
+    }
+    this._pending.push(event);
+    const reason = this._channel ? 'Backlog still replaying' : 'RabbitMQ channel unavailable';
+    this._logger.warn(
+      `${reason}; buffered event ${event._eventId} for later publish (${this._pending.length} pending).`,
+    );
+  }
+
+  /**
+   * Replays buffered events in FIFO order on the current channel. Stops (keeping the rest
+   * buffered) if the channel is gone again mid-replay; a single failed publish is logged and
+   * dropped so one poison event cannot block the queue.
+   */
+  private async _flushPending(): Promise<void> {
+    if (this._flushing) return;
+    this._flushing = true;
+    try {
+      if (this._pending.length > 0 && this._channel) {
+        this._logger.info(`Replaying ${this._pending.length} buffered event(s) to RabbitMQ.`);
+      }
+      while (this._pending.length > 0) {
+        const channel = this._channel;
+        if (!channel) return; // still down (or dropped again): keep the backlog for the next reconnect
+        const event = this._pending.shift();
+        if (!event) break;
+        try {
+          await this._publish(channel, event);
+        } catch (err) {
+          this._logger.error(
+            `Failed to replay buffered event ${event._eventId}; dropping it.`,
+            err,
+          );
+        }
+      }
+    } finally {
+      this._flushing = false;
     }
   }
 }
