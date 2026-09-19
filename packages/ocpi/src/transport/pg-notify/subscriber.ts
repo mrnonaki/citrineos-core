@@ -20,7 +20,7 @@ interface IPgNotification {
 }
 
 type EventHandler<T = any> = {
-  handleEvent: (event: { eventType: DtoEventType; payload: T }) => void;
+  handleEvent: (event: { eventType: DtoEventType; payload: T }) => void | Promise<void>;
   handleError: (error: any) => void;
   handleDisconnect?: () => void;
 };
@@ -63,15 +63,28 @@ export class PgNotifyEventSubscriber implements IDtoEventSubscriber {
       const handler = this.eventHandlers.get(msg.channel);
       if (!handler) return;
 
+      let payload: IPgNotification;
       try {
-        const payload: IPgNotification = JSON.parse(msg.payload ?? '{}');
-        handler.handleEvent({
-          eventType: payload.operation,
-          payload: payload.data,
-        });
+        payload = JSON.parse(msg.payload ?? '{}');
       } catch (err) {
         this._logger.error(`Failed to parse notification payload:`, err);
         handler.handleError(err);
+        return;
+      }
+
+      // Handlers may be async (the DtoRouter's is). Anything that escapes this emitter callback —
+      // a sync throw or an unhandled rejection — takes the whole process down, so both are routed
+      // to handleError instead.
+      const onError = (err: unknown) => {
+        this._logger.error(`Failed to handle notification on "${msg.channel}":`, err);
+        handler.handleError(err);
+      };
+      try {
+        Promise.resolve(
+          handler.handleEvent({ eventType: payload.operation, payload: payload.data }),
+        ).catch(onError);
+      } catch (err) {
+        onError(err);
       }
     });
 
@@ -102,7 +115,7 @@ export class PgNotifyEventSubscriber implements IDtoEventSubscriber {
 
   async subscribe<T extends IDtoPayload>(
     eventId: string,
-    handleEvent: (event: { eventType: DtoEventType; payload: T }) => void,
+    handleEvent: (event: { eventType: DtoEventType; payload: T }) => void | Promise<void>,
     handleError: (error: any) => void,
     handleDisconnect?: () => void,
   ): Promise<boolean> {
