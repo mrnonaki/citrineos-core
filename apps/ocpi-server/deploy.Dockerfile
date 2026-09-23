@@ -5,6 +5,9 @@
 # Build context is the monorepo root (citrineos-core). @citrineos/base,
 # @citrineos/ocpp and @citrineos/ocpi are resolved as workspace packages,
 # so there is no longer any tarball packing or cross-repo copying.
+# BuildKit predefines BUILDPLATFORM; declaring it lets non-BuildKit builders (kaniko)
+# override it with --build-arg BUILDPLATFORM=linux/arm64 for a native arm64 build.
+ARG BUILDPLATFORM
 FROM --platform=${BUILDPLATFORM:-linux/amd64} node:24.16.0 AS build
 
 RUN corepack enable

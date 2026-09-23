@@ -3,6 +3,9 @@
 #  SPDX-License-Identifier: Apache-2.0
 
 # Use a specific base image with platform support
+# BuildKit predefines BUILDPLATFORM; declaring it lets non-BuildKit builders (kaniko)
+# override it with --build-arg BUILDPLATFORM=linux/arm64 for a native arm64 build.
+ARG BUILDPLATFORM
 FROM --platform=${BUILDPLATFORM:-linux/amd64} node:24.16.0 AS build
 
 RUN corepack enable
