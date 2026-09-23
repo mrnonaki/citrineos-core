@@ -80,7 +80,7 @@ build-image-ocpi:
     ARCH_SUFFIX: "-arm64"
     # build stage FROM --platform=${BUILDPLATFORM:-linux/amd64}: point it at arm64 and
     # make kaniko resolve every base image + the pushed manifest as linux/arm64.
-    PLATFORM_ARGS: "--customPlatform=linux/arm64 --build-arg BUILDPLATFORM=linux/arm64"
+    PLATFORM_ARGS: "--custom-platform=linux/arm64 --build-arg BUILDPLATFORM=linux/arm64"
   rules:
     # v2-wallet: opt-in via the project CI variable BUILD_ARM64=true
     - if: '$BUILD_ARM64 == "true" && $CI_COMMIT_BRANCH == "v2-wallet"'
