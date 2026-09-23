@@ -192,6 +192,9 @@ const EXPECTED_TOKENS = [
   'handlers',
   'healthController',
   'httpExceptionHandler',
+  // chargemai /ocpi-x/v1/live extension (fork) — registered by registerLiveExtension()
+  'liveController',
+  'liveService',
   'locationMapper',
   'locationsBroadcaster',
   'locationsClientApi',
