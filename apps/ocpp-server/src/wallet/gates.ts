@@ -155,9 +155,16 @@ async function stationNameById(stationDbId: number): Promise<string | undefined>
   return st?.ocppConnectionName ?? undefined;
 }
 
-async function stationProtocol(deps: GateDeps, tenantId: number, stationId: string): Promise<string | undefined> {
+async function stationProtocol(
+  deps: GateDeps,
+  tenantId: number,
+  stationId: string,
+): Promise<string | undefined> {
   try {
-    const station = await deps.locationRepository.readChargingStationByOcppConnectionName(tenantId, stationId);
+    const station = await deps.locationRepository.readChargingStationByOcppConnectionName(
+      tenantId,
+      stationId,
+    );
     return station?.protocol ?? undefined;
   } catch {
     return undefined;
@@ -245,7 +252,9 @@ async function dispatchRemoteStop(
     protocol,
     action: is16 ? 'RemoteStopTransaction' : 'RequestStopTransaction',
     eventGroup: 'evdriver',
-    payload: is16 ? { transactionId: parseInt(transactionId, 10) } : { transactionId: String(transactionId) },
+    payload: is16
+      ? { transactionId: parseInt(transactionId, 10) }
+      : { transactionId: String(transactionId) },
   });
 }
 
@@ -279,17 +288,18 @@ export class PreparingGate {
   onFrame(evt: GateFrameEvent): void {
     const status = evt.payload?.status ?? evt.payload?.connectorStatus;
     if (status !== 'Preparing' && status !== 'Occupied') return;
-    setImmediate(() =>
-      void (async () => {
-        const row = await connectorRowFromFrame(this._deps, evt);
-        if (!row) {
-          this._logger.warn(
-            `preparing gate: no connector row for ${evt.ocppConnectionName} ${JSON.stringify(evt.payload)} — skipping`,
-          );
-          return;
-        }
-        await this._fire(evt, row);
-      })().catch((err) => this._logger.warn(`preparing gate frame error: ${err}`)),
+    setImmediate(
+      () =>
+        void (async () => {
+          const row = await connectorRowFromFrame(this._deps, evt);
+          if (!row) {
+            this._logger.warn(
+              `preparing gate: no connector row for ${evt.ocppConnectionName} ${JSON.stringify(evt.payload)} — skipping`,
+            );
+            return;
+          }
+          await this._fire(evt, row);
+        })().catch((err) => this._logger.warn(`preparing gate frame error: ${err}`)),
     );
   }
 
@@ -357,10 +367,16 @@ export class PreparingGate {
         return;
       }
       if (!reply.idTag || !reply.idTokenType) {
-        this._logger.error(`preparing gate Accepted without idTag/idTokenType — aborting RemoteStart`);
+        this._logger.error(
+          `preparing gate Accepted without idTag/idTokenType — aborting RemoteStart`,
+        );
         return;
       }
-      await this._deps.authorizationRepository.ensureAccepted(tenantId, reply.idTag, reply.idTokenType);
+      await this._deps.authorizationRepository.ensureAccepted(
+        tenantId,
+        reply.idTag,
+        reply.idTokenType,
+      );
       // Wire numbers straight from the frame: dispatchRemoteStart picks by the
       // station's live protocol, so pass both — the 1.6 connector serial and the
       // 2.0.1 evse serial.
@@ -368,11 +384,16 @@ export class PreparingGate {
         this._deps,
         tenantId,
         stationId,
-        { ocpp16ConnectorId: (p.connectorId ?? connectorId) as number, ocpp201EvseId: ocpp201EvseId ?? connectorId },
+        {
+          ocpp16ConnectorId: (p.connectorId ?? connectorId) as number,
+          ocpp201EvseId: ocpp201EvseId ?? connectorId,
+        },
         reply.idTag,
         reply.idTokenType,
       );
-      this._logger.info(`preparing gate started session for ${stationId}:${connectorId} (idTag ${reply.idTag})`);
+      this._logger.info(
+        `preparing gate started session for ${stationId}:${connectorId} (idTag ${reply.idTag})`,
+      );
     } catch (err) {
       this._logger.warn(`preparing gate error for ${stationId}:${connectorId}: ${err}`);
     } finally {

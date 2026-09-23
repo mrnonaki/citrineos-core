@@ -3,7 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest';
-import { etaMinutes, LiveService, roundSoc, SOC_STALE_MS } from '../../src/services/live-service.js';
+import {
+  etaMinutes,
+  LiveService,
+  roundSoc,
+  SOC_STALE_MS,
+} from '../../src/services/live-service.js';
 
 const NOW = Date.parse('2026-01-01T12:00:00Z');
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();

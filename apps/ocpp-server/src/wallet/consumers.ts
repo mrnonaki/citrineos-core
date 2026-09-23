@@ -15,7 +15,8 @@
 import type { ILogObj, Logger } from 'tslog';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
 
-const REMOTESTART_QUEUE = process.env.RABBITMQ_REMOTESTART_QUEUE ?? 'citrineos.rabbitmq.remotestart';
+const REMOTESTART_QUEUE =
+  process.env.RABBITMQ_REMOTESTART_QUEUE ?? 'citrineos.rabbitmq.remotestart';
 const REMOTESTOP_QUEUE = process.env.RABBITMQ_REMOTESTOP_QUEUE ?? 'citrineos.rabbitmq.remotestop';
 const TENANT_ID = Number(process.env.WALLET_TENANT_ID ?? 1);
 
@@ -80,7 +81,9 @@ abstract class WalletConsumer {
       // Upstream ChannelManager without closeChannel: the consumer keeps its
       // channel until process exit. Loud, so a "stopped" consumer that still
       // consumes is explainable from logs.
-      this._logger.warn(`stop(): channelManager has no closeChannel — ${this._queue} consumer not detached`);
+      this._logger.warn(
+        `stop(): channelManager has no closeChannel — ${this._queue} consumer not detached`,
+      );
       return;
     }
     await this._deps.channelManager.closeChannel(this._channelId);
@@ -107,7 +110,10 @@ export class RemoteStartConsumer extends WalletConsumer {
     const { stationId, idTag, chargingProfile, request } = payload ?? {};
     const evseId = payload?.evseId ?? payload?.connectorId;
     if (!stationId || (!request && (!idTag || !evseId))) {
-      return { success: false, payload: 'Invalid payload: need stationId + (idTag & evseId) or request' };
+      return {
+        success: false,
+        payload: 'Invalid payload: need stationId + (idTag & evseId) or request',
+      };
     }
     const protocol = await this.stationProtocol(stationId);
     const is16 = protocol === 'ocpp1.6';
@@ -151,9 +157,13 @@ export class RemoteStopConsumer extends WalletConsumer {
 
   protected async handle(payload: any): Promise<any> {
     const { stationId, request } = payload ?? {};
-    const transactionId = payload?.transactionId != null ? String(payload.transactionId) : undefined;
+    const transactionId =
+      payload?.transactionId != null ? String(payload.transactionId) : undefined;
     if (!stationId || (!request && !transactionId)) {
-      return { success: false, payload: 'Invalid payload: need stationId + transactionId or request' };
+      return {
+        success: false,
+        payload: 'Invalid payload: need stationId + transactionId or request',
+      };
     }
     const protocol = await this.stationProtocol(stationId);
     const is16 = protocol === 'ocpp1.6';
@@ -173,7 +183,11 @@ export class RemoteStopConsumer extends WalletConsumer {
       if (!tx.isActive) {
         return {
           success: true,
-          payload: { alreadyStopped: true, endedAt: tx.endTime ?? null, stoppedReason: tx.stoppedReason ?? null },
+          payload: {
+            alreadyStopped: true,
+            endedAt: tx.endTime ?? null,
+            stoppedReason: tx.stoppedReason ?? null,
+          },
         };
       }
     }
@@ -184,7 +198,11 @@ export class RemoteStopConsumer extends WalletConsumer {
       protocol,
       action: is16 ? 'RemoteStopTransaction' : 'RequestStopTransaction',
       eventGroup: 'evdriver',
-      payload: request ?? (is16 ? { transactionId: parseInt(transactionId!, 10) } : { transactionId: transactionId! }),
+      payload:
+        request ??
+        (is16
+          ? { transactionId: parseInt(transactionId!, 10) }
+          : { transactionId: transactionId! }),
     });
   }
 }
