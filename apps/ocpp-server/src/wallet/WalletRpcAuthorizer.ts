@@ -25,7 +25,10 @@ const OCPP16_SAFE_STATUSES: ReadonlySet<string> = new Set([
 
 const CACHE_NAMESPACE = 'walletAuth';
 // Same knob as the 1.9.1 fork (ms); used as the Redis last-attempt TTL here.
-const CACHE_TTL_SECONDS = Math.max(1, Number(process.env.RABBITMQ_AUTH_CACHE_TTL_MS ?? 120000) / 1000);
+const CACHE_TTL_SECONDS = Math.max(
+  1,
+  Number(process.env.RABBITMQ_AUTH_CACHE_TTL_MS ?? 120000) / 1000,
+);
 
 interface WalletRpcAuthorizerCradle {
   cache: any;

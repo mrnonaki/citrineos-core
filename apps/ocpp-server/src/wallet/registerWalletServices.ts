@@ -34,8 +34,9 @@ export function registerWalletServices(container: AwilixContainer): void {
     walletRpcAuthorizer: asClass(WalletRpcAuthorizer).singleton(),
     // Gate the authorizer behind RABBITMQ_AUTH so an unconfigured deploy keeps
     // upstream behavior (pre-synced rows only, no RPC).
-    authorizers: asFunction(({ walletRpcAuthorizer }: { walletRpcAuthorizer: WalletRpcAuthorizer }) =>
-      walletRpcEnabled() ? [walletRpcAuthorizer] : [],
+    authorizers: asFunction(
+      ({ walletRpcAuthorizer }: { walletRpcAuthorizer: WalletRpcAuthorizer }) =>
+        walletRpcEnabled() ? [walletRpcAuthorizer] : [],
     ).singleton(),
   });
 }
@@ -45,7 +46,9 @@ export function registerWalletServices(container: AwilixContainer): void {
 export function assertWalletOverrides(container: AwilixContainer): void {
   const repo = container.resolve('authorizationRepository');
   if (!(repo instanceof WalletAuthorizationRepository)) {
-    throw new Error('wallet: authorizationRepository override NOT applied — upstream token renamed?');
+    throw new Error(
+      'wallet: authorizationRepository override NOT applied — upstream token renamed?',
+    );
   }
   const authorizers = container.resolve('authorizers') as unknown[];
   if (walletRpcEnabled() && !authorizers.some((a) => a instanceof WalletRpcAuthorizer)) {
