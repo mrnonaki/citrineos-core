@@ -32,4 +32,8 @@ WORKDIR /usr/local/apps/citrineos/apps/ocpi-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpi-server/entrypoint.sh
 
+# ocpiServer.port is hardcoded to 8085 in src/config/envs/*; override with
+# CITRINEOS_OCPI_OCPISERVER_PORT if ever needed.
+EXPOSE 8085
+
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpi-server/entrypoint.sh"]
