@@ -82,8 +82,10 @@ build-image-ocpi:
     # make kaniko resolve every base image + the pushed manifest as linux/arm64.
     PLATFORM_ARGS: "--customPlatform=linux/arm64 --build-arg BUILDPLATFORM=linux/arm64"
   rules:
+    # v2-wallet: opt-in via the project CI variable BUILD_ARM64=true
     - if: '$BUILD_ARM64 == "true" && $CI_COMMIT_BRANCH == "v2-wallet"'
-    - if: '$BUILD_ARM64 == "true" && $CI_COMMIT_BRANCH =~ /^ci\/arm64/'
+    # ci/arm64* branches: always run (testing the arm64 runner/pipeline itself)
+    - if: '$CI_COMMIT_BRANCH =~ /^ci\/arm64/'
   # A1.Flex 2 OCPU is slower than the E-series x86 nodes for tsc + pnpm deploy
   timeout: 75m
 
