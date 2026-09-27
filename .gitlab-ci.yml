@@ -25,6 +25,9 @@
 stages: [build]
 
 .kaniko-build:
+  # amd64 jobs are tagged so the arm64 runner (run-untagged ON) can never pick one up once
+  # BUILD_AMD64=true is set (kaniko builds for the host arch). .kaniko-build-arm64 overrides the tag.
+  tags: [amd64]
   stage: build
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
