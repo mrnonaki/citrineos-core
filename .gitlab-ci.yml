@@ -1,7 +1,7 @@
 # Build the CitrineOS v2 server images (slim: pnpm deploy --prod, see
 # apps/<app>/deploy.Dockerfile) on every push to v2-wallet:
-#   build-image       -> ocpp-server -> <registry>:<tag>            / OCIR citrineos-core
-#   build-image-ocpi  -> ocpi-server -> <registry>/ocpi:<tag>       / OCIR citrineos-ocpi
+#   build-image       -> ocpp-server -> <registry>:<tag>            / OCIR citrineos-core   (amd64, BUILD_AMD64=true)
+#   build-image-ocpi  -> ocpi-server -> <registry>/ocpi:<tag>       / OCIR citrineos-ocpi   (amd64, BUILD_AMD64=true)
 #
 # Pushes :<short-sha> + :v2-wallet to the GitLab registry, and
 # mirrors both to OCIR (in-region for the OKE cluster, ~3s pulls) when the CI
@@ -55,7 +55,9 @@ stages: [build]
       ${PLATFORM_ARGS}
       ${KANIKO_ARGS}
   rules:
-    - if: '$CI_COMMIT_BRANCH == "v2-wallet"'
+    # amd64 needs the x86 runner (pool-e3). Once the cluster is arm64-only that runner is gone,
+    # so amd64 builds are opt-in via the project CI variable BUILD_AMD64=true.
+    - if: '$BUILD_AMD64 == "true" && $CI_COMMIT_BRANCH == "v2-wallet"'
   timeout: 40m
 
 build-image:
