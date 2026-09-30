@@ -53,6 +53,17 @@ describe('PaginatedMiddleware', () => {
     expect(set).not.toHaveProperty('Link');
   });
 
+  it('omits the link but keeps the counts when the request host cannot form a URL', async () => {
+    const { ctx, set } = aContext({ data: [1, 2], total: 30, limit: 10, offset: 0 });
+    (ctx as any).request.host = 'not a host';
+
+    await new PaginatedMiddleware().use(ctx, next);
+
+    expect(set).not.toHaveProperty('Link');
+    expect(set['X-Total-Count']).toBe(30);
+    expect(set['X-Limit']).toBe(10);
+  });
+
   it('leaves a response that carries no paging alone', async () => {
     // The middleware is attached per endpoint, but an endpoint that throws is answered by the
     // exception handler with an OCPI error body, and a 204 has no body at all. Reading paging

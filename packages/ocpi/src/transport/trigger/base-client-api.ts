@@ -269,22 +269,31 @@ export abstract class BaseClientApi {
     );
     for (const partner of partners) {
       this.logger.debug(`Requesting partner ${partner.countryCode}_${partner.partyId}`);
-      const response = await this.request(
-        cpoCountryCode,
-        cpoPartyId,
-        partner.countryCode!,
-        partner.partyId!,
-        httpMethod,
-        schema,
-        partner.partnerProfileOCPI!,
-        routingHeaders,
-        url,
-        body,
-        paginatedParams,
-        otherParams,
-        path,
-      );
-      responses.push(response);
+      try {
+        responses.push(
+          await this.request(
+            cpoCountryCode,
+            cpoPartyId,
+            partner.countryCode!,
+            partner.partyId!,
+            httpMethod,
+            schema,
+            partner.partnerProfileOCPI!,
+            routingHeaders,
+            url,
+            body,
+            paginatedParams,
+            otherParams,
+            path,
+          ),
+        );
+      } catch (e) {
+        // One partner's failure must not starve the partners after it.
+        this.logger.error(
+          `${httpMethod} ${moduleId}_${interfaceRole} to partner ${partner.countryCode}_${partner.partyId} failed`,
+          e,
+        );
+      }
     }
     return responses;
   }
