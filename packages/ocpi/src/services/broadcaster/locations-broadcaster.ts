@@ -23,6 +23,7 @@ import {
 import type { ConnectorMapper, EvseMapper, LocationMapper } from '../../mappers/index.js';
 import type { OcpiDependencies } from '../../server/dependencies.js';
 import { OcpiEmptyResponseSchema } from '../../types/ocpi-empty-response.js';
+import { toOcpiDateTime } from '../../util/date-time.js';
 
 export interface LocationsBroadcasterDependencies extends OcpiDependencies {
   credentialsService: CredentialsService;
@@ -136,7 +137,7 @@ export class LocationsBroadcaster extends BaseBroadcaster {
       tenant,
       {
         status: this.evseMapper.mapEvseStatusFromConnectors(evseDto.connectors ?? []),
-        last_updated: evseDto.updatedAt!,
+        last_updated: toOcpiDateTime(evseDto.updatedAt!),
       },
       HttpMethod.Patch,
       path,
