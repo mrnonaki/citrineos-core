@@ -15,12 +15,15 @@ import type { QueryInterface } from 'sequelize';
 export default {
   up: async (queryInterface: QueryInterface) => {
     await queryInterface.sequelize.query(`
-      CREATE OR REPLACE FUNCTION "ConnectorTouchEvse"()
+      CREATE OR REPLACE FUNCTION "TouchEvseFromConnector"()
       RETURNS trigger AS $$
       DECLARE
         touchedAt timestamptz;
       BEGIN
-        IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
+        -- timestamp/updatedAt move on every StatusNotification, even one that repeats the
+        -- same status; only a change in the remaining columns is visible over OCPI.
+        IF TG_OP = 'UPDATE'
+           AND (to_jsonb(OLD) - 'updatedAt' - 'timestamp') = (to_jsonb(NEW) - 'updatedAt' - 'timestamp') THEN
           RETURN NULL;
         END IF;
         touchedAt := CASE
@@ -38,14 +41,14 @@ export default {
     `);
 
     await queryInterface.sequelize.query(`
-      CREATE TRIGGER "ConnectorTouchEvse"
+      CREATE OR REPLACE TRIGGER "ConnectorTouchEvse"
       AFTER INSERT OR UPDATE ON "Connectors"
       FOR EACH ROW
-      EXECUTE FUNCTION "ConnectorTouchEvse"();
+      EXECUTE FUNCTION "TouchEvseFromConnector"();
     `);
 
     await queryInterface.sequelize.query(`
-      CREATE OR REPLACE FUNCTION "EvseTouchLocation"()
+      CREATE OR REPLACE FUNCTION "TouchLocationFromEvse"()
       RETURNS trigger AS $$
       DECLARE
         touchedAt timestamptz;
@@ -75,10 +78,10 @@ export default {
     `);
 
     await queryInterface.sequelize.query(`
-      CREATE TRIGGER "EvseTouchLocation"
+      CREATE OR REPLACE TRIGGER "EvseTouchLocation"
       AFTER INSERT OR UPDATE ON "Evses"
       FOR EACH ROW
-      EXECUTE FUNCTION "EvseTouchLocation"();
+      EXECUTE FUNCTION "TouchLocationFromEvse"();
     `);
   },
 
@@ -87,13 +90,13 @@ export default {
       DROP TRIGGER IF EXISTS "EvseTouchLocation" ON "Evses";
     `);
     await queryInterface.sequelize.query(`
-      DROP FUNCTION IF EXISTS "EvseTouchLocation"();
+      DROP FUNCTION IF EXISTS "TouchLocationFromEvse"();
     `);
     await queryInterface.sequelize.query(`
       DROP TRIGGER IF EXISTS "ConnectorTouchEvse" ON "Connectors";
     `);
     await queryInterface.sequelize.query(`
-      DROP FUNCTION IF EXISTS "ConnectorTouchEvse"();
+      DROP FUNCTION IF EXISTS "TouchEvseFromConnector"();
     `);
   },
 };

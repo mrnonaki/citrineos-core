@@ -253,7 +253,7 @@ export class LocationsModule extends AbstractDtoModule implements OcpiModule {
     const chargingStationDto = chargingStationResponse.ChargingStations[0] as ChargingStationDto;
     connectorDto.chargingStation = chargingStationDto;
 
-    // TODO: filter out status updates, since they should only apply at the EVSE level
+    // TODO: skip the connector PATCH for status-only changes; status is pushed at the EVSE level below
 
     await this.locationsBroadcaster.broadcastPatchConnector(tenant, connectorDto);
 
