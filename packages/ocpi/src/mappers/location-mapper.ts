@@ -39,7 +39,7 @@ import type { OcpiDependencies } from '../server/dependencies.js';
 import { ParkingType } from '../types/parking-type.js';
 import { Facilities } from '../types/facilities.js';
 import type { Hours } from '../types/hours.js';
-import { toOcpiDateTime } from '../util/date-time.js';
+import { toOcpiDateTime, toOptionalOcpiDateTime } from '../util/date-time.js';
 
 export function formatCoordinate(value: number | string): string {
   const str = String(value).trim();
@@ -123,7 +123,7 @@ export class LocationMapper {
       opening_times: location.openingHours
         ? this.mapLocationHours(location.openingHours)
         : undefined,
-      last_updated: toOcpiDateTime(location.updatedAt!),
+      last_updated: toOptionalOcpiDateTime(location.updatedAt),
     };
   }
 
@@ -307,7 +307,7 @@ export class EvseMapper {
         .filter((r) => r !== null),
       connectors: connectors,
       floor_level: station.floorLevel,
-      last_updated: toOcpiDateTime(evse.updatedAt!),
+      last_updated: toOptionalOcpiDateTime(evse.updatedAt),
     };
   }
 
@@ -437,7 +437,7 @@ export class ConnectorMapper {
       max_electric_power: connector.maximumPowerWatts || undefined,
       tariff_ids: connector.tariff ? [connector.tariff.id!.toString()] : undefined,
       terms_and_conditions: connector.termsAndConditionsUrl,
-      last_updated: toOcpiDateTime(connector.updatedAt!),
+      last_updated: toOptionalOcpiDateTime(connector.updatedAt),
     };
     return partialConnector;
   }

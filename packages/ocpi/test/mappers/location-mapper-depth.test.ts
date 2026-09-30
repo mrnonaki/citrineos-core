@@ -289,6 +289,16 @@ describe('ConnectorMapper', () => {
     expect(dto.last_updated).toEqual(new Date('2026-08-20T11:00:00.123Z'));
     expect(JSON.stringify(dto.last_updated)).toBe('"2026-08-20T11:00:00.123Z"');
   });
+
+  it('refuses a timestamp that cannot form a Date instead of serialising last_updated as null', () => {
+    const { connectorMapper } = mappers();
+
+    expect(() =>
+      connectorMapper.fromPartialGraphql({
+        updatedAt: 'yesterday',
+      } as unknown as Partial<ConnectorDto>),
+    ).toThrow('Not a timestamp: yesterday');
+  });
 });
 
 describe('EvseMapper', () => {
