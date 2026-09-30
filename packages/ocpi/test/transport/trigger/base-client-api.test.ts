@@ -438,6 +438,35 @@ describe('broadcastToClients', () => {
     expect(results).toEqual([{ id: 'first' }, { id: 'second' }]);
   });
 
+  it('still reaches the next partner when one request fails, then rejects with every failure', async () => {
+    rest.get
+      .mockResolvedValueOnce({ statusCode: 503, result: null, headers: {} })
+      .mockResolvedValueOnce(ok({ id: 'second' }));
+    const { api } = anApi({
+      TenantPartners: [
+        { countryCode: 'DE', partyId: 'MS1', partnerProfileOCPI: aProfile('t-1') },
+        { countryCode: 'FR', partyId: 'MS2', partnerProfileOCPI: aProfile('t-2') },
+      ],
+    });
+
+    const broadcast = api.broadcastToClients({
+      cpoCountryCode: 'US',
+      cpoPartyId: 'CPO',
+      moduleId: ModuleId.Cdrs,
+      interfaceRole: InterfaceRole.SENDER,
+      httpMethod: HttpMethod.Get,
+      schema: idSchema,
+    });
+
+    await expect(broadcast).rejects.toThrow(AggregateError);
+    await expect(broadcast).rejects.toThrow('failed for 1 of 2 partners');
+    await expect(broadcast).rejects.toMatchObject({
+      errors: [expect.any(UnsuccessfulRequestException)],
+    });
+    expect(rest.get).toHaveBeenCalledTimes(2);
+    expect(rest.get.mock.calls[1][1].additionalHeaders['OCPI-to-party-id']).toBe('MS2');
+  });
+
   it('returns an empty array when the CPO has no partners', async () => {
     const { api, graphqlRequest } = anApi({ TenantPartners: [] });
 
