@@ -12,11 +12,11 @@ vi.mock('typedi', () => ({
 
 import { PaginatedMiddleware } from '../../../src/apis/middleware/paginated-middleware.js';
 
-function aContext(body: unknown) {
+function aContext(body: unknown, host = 'cpo.test') {
   const set: Record<string, unknown> = {};
   return {
     ctx: {
-      request: { protocol: 'https', host: 'cpo.test', url: '/ocpi/2.2.1/cdrs?limit=10' },
+      request: { protocol: 'https', host, url: '/ocpi/2.2.1/cdrs?limit=10' },
       response: {
         body,
         set: (field: string, value: unknown) => {
@@ -54,8 +54,7 @@ describe('PaginatedMiddleware', () => {
   });
 
   it('omits the link but keeps the counts when the request host cannot form a URL', async () => {
-    const { ctx, set } = aContext({ data: [1, 2], total: 30, limit: 10, offset: 0 });
-    (ctx as any).request.host = 'not a host';
+    const { ctx, set } = aContext({ data: [1, 2], total: 30, limit: 10, offset: 0 }, 'not a host');
 
     await new PaginatedMiddleware().use(ctx, next);
 

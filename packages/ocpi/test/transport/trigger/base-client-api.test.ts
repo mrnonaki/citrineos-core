@@ -438,7 +438,7 @@ describe('broadcastToClients', () => {
     expect(results).toEqual([{ id: 'first' }, { id: 'second' }]);
   });
 
-  it('keeps going with the next partner when one request fails', async () => {
+  it('still reaches the next partner when one request fails, then rejects with every failure', async () => {
     rest.get
       .mockResolvedValueOnce({ statusCode: 503, result: null, headers: {} })
       .mockResolvedValueOnce(ok({ id: 'second' }));
@@ -449,7 +449,7 @@ describe('broadcastToClients', () => {
       ],
     });
 
-    const results = await api.broadcastToClients({
+    const broadcast = api.broadcastToClients({
       cpoCountryCode: 'US',
       cpoPartyId: 'CPO',
       moduleId: ModuleId.Cdrs,
@@ -458,9 +458,13 @@ describe('broadcastToClients', () => {
       schema: idSchema,
     });
 
+    await expect(broadcast).rejects.toThrow(AggregateError);
+    await expect(broadcast).rejects.toThrow('failed for 1 of 2 partners');
+    await expect(broadcast).rejects.toMatchObject({
+      errors: [expect.any(UnsuccessfulRequestException)],
+    });
     expect(rest.get).toHaveBeenCalledTimes(2);
     expect(rest.get.mock.calls[1][1].additionalHeaders['OCPI-to-party-id']).toBe('MS2');
-    expect(results).toEqual([{ id: 'second' }]);
   });
 
   it('returns an empty array when the CPO has no partners', async () => {
