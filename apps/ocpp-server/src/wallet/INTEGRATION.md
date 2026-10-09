@@ -129,6 +129,14 @@ CitrineOS ships Hasura over its Postgres. Useful reads for a wallet:
    replies unless you intend exactly that.
 5. Repeat Preparing asks and duplicate SuspendedEV events are normal under
    at-least-once delivery — make every reply idempotent.
+6. A RemoteStart/RemoteStop reply of `{"success": true}` means the command was
+   handed to the router, **not** that the charger accepted it. The router sends one
+   Call at a time per charger and dead-letters a Call that is older than
+   `timeouts.staleCallMaxAgeSeconds` before it can be sent (default 40,
+   `CITRINEOS_TIMEOUTS_STALECALLMAXAGESECONDS`, 0 = never) or that found
+   `ocpp.maxPendingCallsPerStation` (default 5,
+   `CITRINEOS_OCPP_MAXPENDINGCALLSPERSTATION`) Calls already queued for that
+   charger. Confirm a start/stop from the transaction state, not from the reply.
 
 ## Minimal consumer skeleton (Node, amqplib)
 
