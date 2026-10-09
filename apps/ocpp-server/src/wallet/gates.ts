@@ -150,11 +150,6 @@ async function connectorRowFromFrame(
   return row;
 }
 
-async function stationNameById(stationDbId: number): Promise<string | undefined> {
-  const st = await ChargingStation.findByPk(stationDbId).catch(() => null);
-  return st?.ocppConnectionName ?? undefined;
-}
-
 async function stationProtocol(
   deps: GateDeps,
   tenantId: number,
@@ -169,20 +164,6 @@ async function stationProtocol(
   } catch {
     return undefined;
   }
-}
-
-/**
- * Read a model attribute defeating class-field shadowing: upstream beta4's
- * Transaction model declares `ocppConnectionName!: string` WITHOUT `declare`, so
- * the compiled class field shadows sequelize's prototype getter and the plain
- * property read returns undefined even though the DB column is populated.
- * `.get(key)` reads dataValues directly and is immune. (Upstream PR candidate:
- * add `declare`.)
- */
-function attr<T = any>(model: any, key: string): T | undefined {
-  const direct = model?.[key];
-  if (direct !== undefined) return direct;
-  return typeof model?.get === 'function' ? model.get(key) : undefined;
 }
 
 /**
