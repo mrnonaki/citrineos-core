@@ -1,0 +1,109 @@
+# Build the CitrineOS v2 server images (slim: pnpm deploy --prod, see
+# apps/<app>/deploy.Dockerfile) on every push to v2-wallet:
+#   build-image       -> ocpp-server -> <registry>:<tag>            / OCIR citrineos-core   (amd64, BUILD_AMD64=true)
+#   build-image-ocpi  -> ocpi-server -> <registry>/ocpi:<tag>       / OCIR citrineos-ocpi   (amd64, BUILD_AMD64=true)
+#
+# Pushes :<short-sha> + :v2-wallet to the GitLab registry, and
+# mirrors both to OCIR (in-region for the OKE cluster, ~3s pulls) when the CI
+# variables OCIR_USER / OCIR_TOKEN are set — absent variables just skip the
+# mirror, the pipeline stays green. OCIR_USER must include the identity-domain
+# segment:
+#   axl5oln5mfej/default/<user>   (plain namespace/user gets 401)
+#
+# Runs on the self-hosted OKE runner (#55922570) — the gitlab.com shared-runner
+# minutes for this namespace are exhausted.
+#
+# arm64 (OKE pool-a1, VM.Standard.A1.Flex): build-image-arm64 / build-image-ocpi-arm64
+# build the SAME Dockerfiles natively on an arm64 runner (kaniko cannot cross-build)
+# and push :<short-sha>-arm64 + :v2-wallet-arm64 — single-arch tags, no manifest
+# list (kaniko cannot create one; the Deployments pin the -arm64 tag explicitly).
+# They only run when the project CI variable BUILD_ARM64 == "true" AND a runner
+# tagged `arm64` exists (job pods must tolerate arch=arm64:NoSchedule and select
+# name=pool-a1). deploy.Dockerfile's build stage is pinned to
+# --platform=${BUILDPLATFORM:-linux/amd64}; kaniko does not set BUILDPLATFORM, so
+# the arm64 jobs pass it as a build-arg together with --customPlatform.
+stages: [build]
+
+.kaniko-build:
+  # amd64 jobs are tagged so the arm64 runner (run-untagged ON) can never pick one up once
+  # BUILD_AMD64=true is set (kaniko builds for the host arch). .kaniko-build-arm64 overrides the tag.
+  tags: [amd64]
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    # keep kaniko within the runner's 3Gi job memory limit
+    KANIKO_ARGS: "--compressed-caching=false --single-snapshot"
+    # amd64 (default): plain tags, no platform override. Overridden by .kaniko-build-arm64.
+    ARCH_SUFFIX: ""
+    PLATFORM_ARGS: ""
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      if [ -n "$OCIR_TOKEN" ]; then
+        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"},\"ap-singapore-1.ocir.io\":{\"username\":\"${OCIR_USER}\",\"password\":\"${OCIR_TOKEN}\"}}}" > /kaniko/.docker/config.json
+      else
+        echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"}}}" > /kaniko/.docker/config.json
+      fi
+  script:
+    - EXTRA=""
+    - if [ -n "$OCIR_TOKEN" ]; then EXTRA="--destination $OCIR_IMAGE:${CI_COMMIT_SHORT_SHA}${ARCH_SUFFIX} --destination $OCIR_IMAGE:v2-wallet${ARCH_SUFFIX}"; fi
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/apps/${APP_DIR}/deploy.Dockerfile"
+      --destination "${GITLAB_IMAGE}:${CI_COMMIT_SHORT_SHA}${ARCH_SUFFIX}"
+      --destination "${GITLAB_IMAGE}:v2-wallet${ARCH_SUFFIX}"
+      $EXTRA
+      ${PLATFORM_ARGS}
+      ${KANIKO_ARGS}
+  rules:
+    # amd64 needs the x86 runner (pool-e3). Once the cluster is arm64-only that runner is gone,
+    # so amd64 builds are opt-in via the project CI variable BUILD_AMD64=true.
+    - if: '$BUILD_AMD64 == "true" && $CI_COMMIT_BRANCH == "v2-wallet"'
+  timeout: 40m
+
+build-image:
+  extends: .kaniko-build
+  variables:
+    APP_DIR: ocpp-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-core
+
+build-image-ocpi:
+  extends: .kaniko-build
+  variables:
+    APP_DIR: ocpi-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE/ocpi
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-ocpi
+
+# ---- arm64 ------------------------------------------------------------------
+.kaniko-build-arm64:
+  extends: .kaniko-build
+  tags: [arm64]
+  variables:
+    ARCH_SUFFIX: "-arm64"
+    # build stage FROM --platform=${BUILDPLATFORM:-linux/amd64}: point it at arm64 and
+    # make kaniko resolve every base image + the pushed manifest as linux/arm64.
+    PLATFORM_ARGS: "--custom-platform=linux/arm64 --build-arg BUILDPLATFORM=linux/arm64"
+  rules:
+    # v2-wallet: opt-in via the project CI variable BUILD_ARM64=true
+    - if: '$BUILD_ARM64 == "true" && $CI_COMMIT_BRANCH == "v2-wallet"'
+    # ci/arm64* branches: always run (testing the arm64 runner/pipeline itself)
+    - if: '$CI_COMMIT_BRANCH =~ /^ci\/arm64/'
+  # A1.Flex 2 OCPU is slower than the E-series x86 nodes for tsc + pnpm deploy
+  timeout: 75m
+
+build-image-arm64:
+  extends: .kaniko-build-arm64
+  variables:
+    APP_DIR: ocpp-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-core
+
+build-image-ocpi-arm64:
+  extends: .kaniko-build-arm64
+  variables:
+    APP_DIR: ocpi-server
+    GITLAB_IMAGE: $CI_REGISTRY_IMAGE/ocpi
+    OCIR_IMAGE: ap-singapore-1.ocir.io/axl5oln5mfej/citrineos-ocpi
