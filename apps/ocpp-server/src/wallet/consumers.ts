@@ -14,6 +14,7 @@
 
 import type { ILogObj, Logger } from 'tslog';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
+import { onBrokerReconnect } from './reconnect.js';
 
 const REMOTESTART_QUEUE =
   process.env.RABBITMQ_REMOTESTART_QUEUE ?? 'citrineos.rabbitmq.remotestart';
@@ -34,6 +35,11 @@ abstract class WalletConsumer {
   protected readonly _logger: Logger<ILogObj>;
   private readonly _channelId: string;
   private readonly _queue: string;
+  // The channel we last consumed on. After a broker reconnect the ChannelManager
+  // hands out a NEW channel for the same id; a different object = we must re-consume.
+  private _channel: any;
+  private _stopped = false;
+  private _disposeReconnect?: () => void;
 
   constructor(deps: ConsumerDeps, channelId: string, queue: string) {
     this._deps = deps;
@@ -43,6 +49,25 @@ abstract class WalletConsumer {
   }
 
   async start(): Promise<void> {
+    this._stopped = false;
+    await this._subscribe();
+    this._disposeReconnect ??= onBrokerReconnect(
+      this._deps.channelManager,
+      this._logger,
+      this._queue,
+      () => this._resubscribe(),
+    );
+  }
+
+  // Idempotent: a 'connected' event while our channel is still the live one is a no-op.
+  private async _resubscribe(): Promise<void> {
+    if (this._stopped) return;
+    const channel = await this._deps.channelManager.getChannel(this._channelId);
+    if (channel === this._channel) return;
+    await this._subscribe();
+  }
+
+  private async _subscribe(): Promise<void> {
     const channel = await this._deps.channelManager.getChannel(this._channelId);
     await channel.assertQueue(this._queue, { durable: true });
     await channel.prefetch(8);
@@ -73,10 +98,16 @@ abstract class WalletConsumer {
         }
       })();
     });
+    // Recorded only after consume() succeeded: a half-done subscribe must not look
+    // "already consuming" to the next _resubscribe() retry.
+    this._channel = channel;
     this._logger.info(`consuming ${this._queue}`);
   }
 
   async stop(): Promise<void> {
+    this._stopped = true;
+    this._disposeReconnect?.();
+    this._disposeReconnect = undefined;
     if (typeof this._deps.channelManager.closeChannel !== 'function') {
       // Upstream ChannelManager without closeChannel: the consumer keeps its
       // channel until process exit. Loud, so a "stopped" consumer that still

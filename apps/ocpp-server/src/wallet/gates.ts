@@ -32,6 +32,7 @@ import { FrameDirection, MESSAGES_EXCHANGE } from '@citrineos/types';
 import type { ILogObj, Logger } from 'tslog';
 import { AmqpRpc, RPC_TIMEOUT_MS } from './WalletRpcClient.js';
 import type { WalletAuthorizationRepository } from './WalletAuthorizationRepository.js';
+import { onBrokerReconnect } from './reconnect.js';
 
 const PREPARING_QUEUE = process.env.RABBITMQ_PREPARING_QUEUE ?? 'citrineos.rabbitmq.preparing';
 const SUSPENDED_QUEUE = process.env.RABBITMQ_SUSPENDED_QUEUE ?? 'citrineos.rabbitmq.suspended';
@@ -582,6 +583,7 @@ export class GatesFrameSource {
   // upstream payload drift does NOT surface here — it parses fine and flows into the
   // async gates, where connectorRowFromFrame's miss-counter catches it instead.
   private _consecutiveFailures = 0;
+  private _disposeReconnect?: () => void;
 
   constructor(deps: GateDeps, gates: { preparing?: PreparingGate; suspended?: SuspendedEvGate }) {
     this._logger = deps.logger.getSubLogger({ name: this.constructor.name });
@@ -591,8 +593,30 @@ export class GatesFrameSource {
   }
 
   async start(): Promise<void> {
+    this._draining = false;
+    await this._subscribe();
+    this._disposeReconnect ??= onBrokerReconnect(
+      this._channelManager,
+      this._logger,
+      GATES_QUEUE,
+      () => this._resubscribe(),
+    );
+  }
+
+  // Idempotent: a 'connected' event while our channel is still the live one is a no-op.
+  // Never re-arms during shutdown (stop() sets _draining first).
+  private async _resubscribe(): Promise<void> {
+    if (this._draining) return;
     const channel = await this._channelManager.getChannel('gates-frames');
-    this._channel = channel;
+    if (channel === this._channel && this._consumerTag) return;
+    await this._subscribe();
+  }
+
+  private async _subscribe(): Promise<void> {
+    const channel = await this._channelManager.getChannel('gates-frames');
+    // Recorded only once consume() succeeds (below): a half-done subscribe must not look
+    // "already consuming" to the next _resubscribe() retry.
+    this._consumerTag = undefined;
     // Idempotent, matches the publisher's declaration exactly (mismatched args 406).
     await channel.assertExchange(MESSAGES_EXCHANGE, 'topic', { durable: true });
     await channel.assertQueue(GATES_QUEUE, { durable: true, autoDelete: false });
@@ -629,6 +653,7 @@ export class GatesFrameSource {
         channel.ack(msg);
       }
     });
+    this._channel = channel;
     this._consumerTag = consumerTag;
     this._logger.info(
       `gates consuming ${GATES_QUEUE} <- ${MESSAGES_EXCHANGE} [${GATE_BINDINGS.join(', ')}]`,
@@ -639,6 +664,8 @@ export class GatesFrameSource {
     // Drain first (in-flight prefetched frames ack without dispatching), then cancel
     // the consumer so no new frame dispatches a gate (RemoteStart/Stop) mid-drain.
     this._draining = true;
+    this._disposeReconnect?.();
+    this._disposeReconnect = undefined;
     if (this._channel && this._consumerTag) {
       try {
         await this._channel.cancel(this._consumerTag);
