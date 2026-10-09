@@ -151,7 +151,18 @@ ch.consume('citrineos.rabbitmq.auth', async (msg) => {
 
 ## Running this CSMS
 
-`deploy/k8s/citrineos/` in this repo is a complete k8s manifest set (run-once migrate
-Job included). The modules deployment starts the wallet entrypoint with
-`command: node dist/wallet/main.js` and the flow flags above. Compose users: build
-`apps/ocpp-server/deploy.Dockerfile` and set the same env on the `citrine` service.
+Build `apps/ocpp-server/deploy.Dockerfile` (one image, three roles; deployment
+manifests are not kept in this repo). Run migrations once per release
+(`sequelize-cli db:migrate`, then `node dist/scripts/provision-partitions.js`)
+before rolling the processes:
+
+- **modules** — `APP_NAME=modules`, `command: node dist/wallet/main.js` plus the flow
+  flags above (the only process that loads the wallet layer).
+- **router** — `APP_NAME=router`, `command: node dist/wallet/router-main.js` with
+  `CITRINEOS_MESSAGEBROKER_AMQP_INSTANCEIDENTIFIER` set unique per replica (e.g. the
+  pod name); it refuses to boot without it.
+- **messages** — `APP_NAME=messages`, stock `node dist/index.js` (persists the
+  router's frames from `messages.ocpp` as OCPPMessages rows; the gates read the same
+  frames from their own `wallet.gates` queue on the `messages` exchange).
+
+Compose users: set the same env on the `citrine` service.
